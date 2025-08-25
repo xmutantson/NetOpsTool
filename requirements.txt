@@ -1,0 +1,11 @@
+# requirements.txt
+flask==3.0.2
+waitress==3.0.0
+python-dateutil==2.9.0.post0
+SQLAlchemy==2.0.32
+alembic==1.13.2
+pydantic==1.10.15
+PyJWT==2.9.0
+argon2-cffi==23.1.0
+flask-limiter==3.8.0
+flask-cors==4.0.1

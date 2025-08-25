@@ -1,0 +1,27 @@
+<!-- templates/stations.html -->
+{% extends "base.html" %}
+{% block content %}
+<h2>Stations</h2>
+<table class="tbl" id="stations-table">
+  <thead><tr><th>Name</th><th>Last Seen</th><th>Default Origin</th><th>Coords</th></tr></thead>
+  <tbody></tbody>
+</table>
+<script>
+async function loadStations(){
+  const r = await fetch('/api/stations');
+  const rows = await r.json();
+  const tb = document.querySelector('#stations-table tbody');
+  tb.innerHTML = '';
+  for (const st of rows){
+    const tr = document.createElement('tr');
+    const link = `<a href="/stations/${encodeURIComponent(st.name)}">${st.name}</a>`;
+    const coords = (st.last_origin_lat!=null && st.last_origin_lon!=null)
+      ? `${st.last_origin_lat.toFixed(5)}, ${st.last_origin_lon.toFixed(5)}`
+      : '—';
+    tr.innerHTML = `<td>${link}</td><td>${st.last_seen_at||'—'}</td><td>${st.last_default_origin||'—'}</td><td>${coords}</td>`;
+    tb.appendChild(tr);
+  }
+}
+loadStations();
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  netops:
+    build: .
+    container_name: netops_tool
+    ports:
+      - "5250:5250"
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - flask_secret:/run/secrets
+    environment:
+      - LOG_LEVEL=INFO
+
+volumes:
+  flask_secret:

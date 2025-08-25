@@ -1,0 +1,25 @@
+<!-- templates/index.html -->
+{% extends "base.html" %}
+{% block content %}
+<h2>Cargo Flows</h2>
+<div class="controls">
+  <label>Window:
+    <select id="hours">
+      <option value="6">6h</option>
+      <option value="24" selected>24h</option>
+      <option value="72">72h</option>
+    </select>
+  </label>
+  <label>Direction:
+    <select id="direction">
+      <option value="all" selected>All</option>
+      <option value="inbound">Inbound</option>
+      <option value="outbound">Outbound</option>
+    </select>
+  </label>
+  <button id="refresh">Refresh</button>
+</div>
+<div id="map"></div>
+<div id="flows-table"></div>
+<script src="{{ url_for('static', filename='js/map.js') }}"></script>
+{% endblock %}

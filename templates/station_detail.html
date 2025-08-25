@@ -1,0 +1,42 @@
+<!-- templates/station_detail.html -->
+{% extends "base.html" %}
+{% block content %}
+<h2>Station: {{ name }}</h2>
+<table class="tbl" id="flights-table">
+  <thead>
+    <tr>
+      <th>Last Seen</th><th>Code</th><th>Tail</th><th>Dir</th><th>Origin</th><th>Dest</th>
+      <th>Cargo</th><th>Weight (lbs)</th><th>T/O</th><th>ETA</th><th>Ramp</th><th>Done</th><th>Remarks</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<script>
+async function loadFlights(){
+  const r = await fetch(`/api/stations/{{ name|tojson|safe }}/flights?complete=all`);
+  const rows = await r.json();
+  const tb = document.querySelector('#flights-table tbody');
+  tb.innerHTML = '';
+  for (const f of rows){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${f.last_seen_at}</td>
+      <td>${f.flight_code||'—'}</td>
+      <td>${f.tail||'—'}</td>
+      <td>${f.direction||'—'}</td>
+      <td>${f.origin||'—'}</td>
+      <td>${f.dest||'—'}</td>
+      <td>${f.cargo_type||'—'}</td>
+      <td>${(f.cargo_weight_lbs??'—')}</td>
+      <td>${f.takeoff_hhmm||'—'}</td>
+      <td>${f.eta_hhmm||'—'}</td>
+      <td>${f.is_ramp_entry? '✓':'—'}</td>
+      <td>${f.complete? '✓':'—'}</td>
+      <td>${f.remarks||''}</td>
+    `;
+    tb.appendChild(tr);
+  }
+}
+loadFlights();
+</script>
+{% endblock %}

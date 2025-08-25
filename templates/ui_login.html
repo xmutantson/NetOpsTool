@@ -1,0 +1,9 @@
+<!-- templates/ui_login.html -->
+{% extends "base.html" %}
+{% block content %}
+<h2>Admin Login</h2>
+<form method="post" action="/login" class="login-form">
+  <label>Password <input type="password" name="password" required></label>
+  <button type="submit">Login</button>
+</form>
+{% endblock %}
