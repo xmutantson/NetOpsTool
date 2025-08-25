@@ -3,6 +3,7 @@
 {% block content %}
 <h2>Cargo Flows</h2>
 <div class="controls">
+  <!-- Existing controls -->
   <label>Window:
     <select id="hours">
       <option value="6">6h</option>
@@ -17,7 +18,38 @@
       <option value="outbound">Outbound</option>
     </select>
   </label>
-  <button id="refresh">Refresh</button>
+  <!-- New: axis filter (cardinal) -->
+  <label>Axis:
+    <select id="axisFilter">
+      <option value="all" selected>All</option>
+      <option value="east">Eastbound</option>
+      <option value="west">Westbound</option>
+      <option value="north">Northbound</option>
+      <option value="south">Southbound</option>
+    </select>
+  </label>
+
+  <!-- New: coloring mode -->
+  <label>Color:
+    <select id="colorMode">
+      <option value="cardinal" selected>Cardinal</option>
+      <option value="mono">Monochrome</option>
+    </select>
+  </label>
+
+  <!-- New: animation controls -->
+  <label style="display:flex;align-items:center;gap:6px;">
+    <input type="checkbox" id="animateDots" checked>
+    Animate
+  </label>
+  <label>Max dots:
+    <input type="number" id="ballsMax" min="1" max="12" value="6" style="width:64px">
+  </label>
+  <label>Weight @ max (lbs):
+    <input type="number" id="weightAtMax" min="100" step="100" value="10000" style="width:92px">
+  </label>
+
+  <button id="refresh">Apply</button>
 </div>
 <div id="map"></div>
 <div id="flows-table"></div>

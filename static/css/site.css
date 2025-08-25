@@ -1,17 +1,42 @@
 /* static/css/site.css */
+html, body { height:100%; }
+body { display:flex; flex-direction:column; }
 :root { --bg:#0b0d10; --fg:#f2f5f7; --muted:#9aa4af; --accent:#60a5fa; --card:#14181c; }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial}
 a{color:var(--accent);text-decoration:none}
 .topbar{display:flex;gap:24px;align-items:center;padding:10px 16px;background:#0f1317;border-bottom:1px solid #1e242b}
 .brand{font-weight:700}
-.container{padding:16px}
+.container{padding:16px; flex:1;}
 #map{height:70vh;border:1px solid #222;border-radius:8px;margin-top:8px}
 .controls{display:flex;gap:10px;align-items:center;margin-bottom:8px}
 .tbl{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden}
 .tbl th,.tbl td{padding:8px 10px;border-bottom:1px solid #222}
 .tbl th{background:#11161b;text-align:left}
-.foot{padding:10px 16px;color:var(--muted);border-top:1px solid #1e242b}
+.foot{
+  padding:10px 16px;
+  color:var(--muted);
+  border-top:1px solid #1e242b;
+  background:#0f1317;
+}
 .login-form{max-width:320px;background:var(--card);padding:16px;border:1px solid #1f2a37;border-radius:8px}
 .login-form input{width:100%;padding:8px;margin-top:6px;margin-bottom:10px;background:#0f141a;border:1px solid #1f2a37;color:var(--fg);border-radius:6px}
 button{background:var(--accent);color:#001b3a;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
+/* Map legend control */
+.leaflet-control.legend{
+  background:var(--card);
+  color:var(--fg);
+  padding:8px 10px;
+  border:1px solid #1f2a37;
+  border-radius:8px;
+  box-shadow:0 2px 6px rgba(0,0,0,.35);
+  font-size:12px;
+  line-height:1.2;
+}
+.legend-row{ display:flex; align-items:center; gap:8px; margin:4px 0; }
+.legend-swatch{ width:14px; height:4px; border-radius:2px; background:#666; }
+.legend-dot{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+.dot-online{ background:#34d399; }
+.dot-idle{ background:#f59e0b; }
+.dot-offline{ background:#ef4444; }
+.leaflet-tooltip.flow-tip { pointer-events: none; }

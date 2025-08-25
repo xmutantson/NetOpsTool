@@ -1,5 +1,6 @@
 # netops/app.py
 from __future__ import annotations
+from datetime import datetime
 from flask import Flask
 from flask_cors import CORS
 from .config import config
@@ -20,6 +21,12 @@ api_mod.limiter.init_app(app)
 # CORS (optional)
 if config.ENABLE_CORS:
     CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# Template globals (e.g., footer year)
+@app.context_processor
+def inject_globals():
+    # UTC is fine; this is purely cosmetic
+    return {"current_year": datetime.utcnow().year}
 
 # Blueprints
 app.register_blueprint(api)

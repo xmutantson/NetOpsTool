@@ -1,5 +1,6 @@
 # NetOpsTool — Dockerfile
 FROM python:3.11-slim
+ARG DEBIAN_FRONTEND=noninteractive
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,14 +8,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps kept tiny
+# System deps (include toolchain needed to build wheels on i386/armv7)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+    ca-certificates curl build-essential gcc g++ libffi-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # App deps
 COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+ && apt-get purge -y build-essential gcc g++ libffi-dev \
+ && apt-get autoremove -y --purge \
+ && rm -rf /var/lib/apt/lists/*
 
 # App source (package + assets)
 COPY netops /app/netops
