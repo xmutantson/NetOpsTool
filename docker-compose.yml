@@ -2,7 +2,8 @@ version: "3.8"
 
 services:
   netops:
-    build: .
+    image: ghcr.io/xmutantson/netops_tool:latest
+    pull_policy: always
     container_name: netops_tool
     ports:
       - "5250:5250"

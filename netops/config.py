@@ -25,8 +25,8 @@ class Config:
     ENV = os.getenv("FLASK_ENV", "production")
     DEBUG = ENV != "production"
 
-    # DB
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////data/netops.db")
+    # DB (persisted via docker-compose bind mount: ./data -> /app/data)
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/netops.db")
 
     # Auth
     NETOPS_JWT_SECRET = os.getenv("NETOPS_JWT_SECRET", "dev-jwt-secret-change-me")
