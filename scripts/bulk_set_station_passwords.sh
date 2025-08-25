@@ -88,9 +88,9 @@ cyan ">> Using container: ${CONTAINER}"
 
 # Which python inside the container?
 PY="python"
-if ! docker exec -i "$CONTAINER" bash -lc "command -v $PY >/dev/null 2>&1"; then
+if ! docker exec -i "$CONTAINER" sh -lc "command -v $PY >/dev/null 2>&1"; then
   PY="python3"
-  docker exec -i "$CONTAINER" bash -lc "command -v $PY >/dev/null 2>&1" \
+  docker exec -i "$CONTAINER" sh -lc "command -v $PY >/dev/null 2>&1" \
     || { red "Neither python nor python3 found in container $CONTAINER"; exit 1; }
 fi
 cyan ">> Using interpreter inside container: ${PY}"
@@ -107,7 +107,7 @@ if [[ "$ASSUME_YES" != "yes" ]]; then
 fi
 
 # Discover helper verbs available in your CLI (best-effort)
-HELP_TXT="$(docker exec -i "$CONTAINER" bash -lc "$PY -m netops.cli --help" 2>&1 || true)"
+HELP_TXT="$(docker exec -i "$CONTAINER" "$PY" -m netops.cli --help 2>&1 || true)"
 HAVE_DEL="no"
 for verb in del-station delete-station remove-station rm-station; do
   if grep -qiE "(^|[[:space:]])$verb($|[[:space:]])" <<<"$HELP_TXT"; then
@@ -120,13 +120,13 @@ FAILS=0
 
 do_add() {
   local code="$1" pass="$2"
-  docker exec -i "$CONTAINER" bash -lc "$PY -m netops.cli add-station \"${code}\" \"${pass}\""
+  docker exec -i "$CONTAINER" "$PY" -m netops.cli add-station "$code" "$pass"
 }
 
 do_del() {
   local code="$1"
   [[ "$HAVE_DEL" == "no" ]] && return 1
-  docker exec -i "$CONTAINER" bash -lc "$PY -m netops.cli ${HAVE_DEL} \"${code}\""
+  docker exec -i "$CONTAINER" "$PY" -m netops.cli ${HAVE_DEL} "$code"
 }
 
 for CODE in "${STATIONS[@]}"; do
@@ -137,15 +137,15 @@ for CODE in "${STATIONS[@]}"; do
     continue
   fi
 
-  if do_add "$CODE" "$PASSWORD" >/dev/null 2>&1; then
-    echo "[OK] added ${CODE}"
+  if do_add "$CODE" "$PASSWORD"; then
+    echo "[OK] set password for ${CODE}"
     continue
   fi
 
   # If add failed, try re-add if allowed
   if [[ "$FORCE_READD" == "yes" && "$HAVE_DEL" != "no" ]]; then
-    if do_del "$CODE" >/dev/null 2>&1; then
-      if do_add "$CODE" "$PASSWORD" >/dev/null 2>&1; then
+    if do_del "$CODE"; then
+      if do_add "$CODE" "$PASSWORD"; then
         echo "[OK] re-added ${CODE} after delete"
         continue
       fi
