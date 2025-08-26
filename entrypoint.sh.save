@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------
+# Secrets bootstrap
+# -----------------------------
+SECRET_DIR=/run/secrets
+FLASK_SECRET_FILE="${SECRET_DIR}/flask_secret"
+INGEST_SECRET_FILE="${SECRET_DIR}/netops_ingest_password"
+
+if [ ! -f "${FLASK_SECRET_FILE}" ]; then
+  echo "[entrypoint] Generating Flask SECRET_KEY…"
+  mkdir -p "${SECRET_DIR}"
+  umask 077
+  openssl rand -hex 32 > "${FLASK_SECRET_FILE}"
+fi
+
+# -----------------------------
+# Alembic migrations on startup
+# -----------------------------
+ALEMBIC_INI="${ALEMBIC_INI:-/app/alembic.ini}"
+REV_INIT="000001_init"
+REV_INV="000002_inventory"
+
+# Best-effort detection of SQLite DB file (so we can introspect when needed)
+_detect_sqlite_file() {
+  # Prefer explicit env var if you use one
+  if [ -n "${NETOPS_DB_FILE:-}" ] && [ -f "${NETOPS_DB_FILE}" ]; then
+    printf '%s' "${NETOPS_DB_FILE}"; return 0
+  fi
+  # Common SQLAlchemy envs
+  local uri="${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}"
+  if [ -n "${uri}" ]; then
+    case "${uri}" in
+      sqlite:////*) printf '%s' "${uri#sqlite:////}"; return 0 ;;
+      sqlite:///*)  printf '%s' "${uri#sqlite:///}";  return 0 ;;
+    esac
+  fi
+  # Fallback to default path used by the app
+  if [ -f "/app/netops.db" ]; then
+    printf '%s' "/app/netops.db"; return 0
+  fi
+  return 1
+}
+
+_sqlite_has_table() {
+  # $1 = DB file, $2 = table name
+  python - "$1" "$2" <<'PY'
+import sqlite3, sys
+db, tbl = sys.argv[1], sys.argv[2]
+try:
+    con = sqlite3.connect(db)
+    cur = con.cursor()
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tbl,))
+    print("1" if cur.fetchone() else "0")
+except Exception:
+    print("0")
+PY
+}
+
+_sqlite_user_table_count() {
+  # $1 = DB file
+  python - "$1" <<'PY'
+import sqlite3, sys
+db = sys.argv[1]
+try:
+    con = sqlite3.connect(db)
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    print(cur.fetchone()[0])
+except Exception:
+    print(0)
+PY
+}
+
+run_migrations() {
+  if [ "${SKIP_MIGRATIONS:-0}" = "1" ]; then
+    echo "[entrypoint] SKIP_MIGRATIONS=1 → skipping Alembic."
+    return 0
+  fi
+  if ! command -v alembic >/dev/null 2>&1; then
+    echo "[entrypoint] WARNING: 'alembic' not found on PATH; skipping migrations." >&2
+    return 0
+  fi
+  if [ ! -f "${ALEMBIC_INI}" ]; then
+    echo "[entrypoint] WARNING: ${ALEMBIC_INI} not found; skipping migrations." >&2
+    return 0
+  fi
+
+  # Attempt to detect legacy DBs with no alembic_version row
+  if dbfile="$(_detect_sqlite_file)"; then
+    if [ -f "${dbfile}" ]; then
+      echo "[entrypoint] Detected SQLite DB at ${dbfile}"
+
+      has_ver_table="$(_sqlite_has_table "${dbfile}" "alembic_version")"
+      if [ "${has_ver_table}" = "1" ]; then
+        echo "[entrypoint] alembic_version present → upgrade to head."
+        alembic -c "${ALEMBIC_INI}" upgrade head
+        echo "[entrypoint] Migrations complete."
+        return 0
+      fi
+
+      # No alembic_version table—decide whether this is brand-new or legacy
+      user_tbls="$(_sqlite_user_table_count "${dbfile}")"
+      if [ "${user_tbls}" = "0" ]; then
+        echo "[entrypoint] Fresh DB (no user tables) → upgrade head."
+        alembic -c "${ALEMBIC_INI}" upgrade head
+        echo "[entrypoint] Migrations complete."
+        return 0
+      fi
+
+      # Legacy, unversioned DB with existing tables: pick the safest baseline to stamp
+      echo "[entrypoint] Legacy DB without alembic_version → stamping baseline then upgrading…"
+      has_inventory="$(_sqlite_has_table "${dbfile}" "inventory_items")"
+      if [ "${has_inventory}" = "1" ]; then
+        baseline="${REV_INV}"
+      else
+        baseline="${REV_INIT}"
+      fi
+      echo "[entrypoint] Stamping baseline ${baseline}"
+      alembic -c "${ALEMBIC_INI}" stamp "${baseline}"
+      echo "[entrypoint] Upgrading to head…"
+      alembic -c "${ALEMBIC_INI}" upgrade head
+      echo "[entrypoint] Migrations complete."
+      return 0
+    fi
+  fi
+
+  # Fallback: DB not detectable as SQLite; just try a straight upgrade.
+  echo "[entrypoint] Running Alembic upgrade head (generic)…"
+  set +e
+  out="$(alembic -c "${ALEMBIC_INI}" upgrade head 2>&1)"; rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "${out}" >&2
+    # If we failed due to pre-existing tables on an unversioned DB, do a conservative stamp to the initial rev then upgrade.
+    if echo "${out}" | grep -qi "already exists"; then
+      echo "[entrypoint] Detected pre-existing schema without versioning; stamping ${REV_INIT} then upgrading…"
+      alembic -c "${ALEMBIC_INI}" stamp "${REV_INIT}"
+      alembic -c "${ALEMBIC_INI}" upgrade head
+      echo "[entrypoint] Migrations complete."
+    else
+      echo "[entrypoint] Alembic upgrade failed; aborting." >&2
+      exit $rc
+    fi
+  else
+    echo "[entrypoint] Migrations complete."
+  fi
+}
+
+run_migrations
+exec "$@"

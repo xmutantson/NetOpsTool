@@ -50,6 +50,14 @@ class ManifestRow(BaseModel):
             raise ValueError("HHMM must be 3–4 digits")
         return v.zfill(4)
 
+class InventoryItem(BaseModel):
+    category: Optional[str] = None
+    category_id: Optional[int] = None
+    item: str
+    qty: Optional[float] = None
+    weight_lbs: Optional[float] = None
+    updated_at: Optional[datetime] = None
+
 class IngestSnapshot(BaseModel):
     station: str
     generated_at: datetime
@@ -59,3 +67,4 @@ class IngestSnapshot(BaseModel):
     window_hours: int = 24
     flows: List[FlowRow] = Field(default_factory=list)
     manifests: List[ManifestRow] = Field(default_factory=list)
+    inventory: List[InventoryItem] = Field(default_factory=list)

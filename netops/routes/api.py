@@ -9,7 +9,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 from ..db import SessionLocal
-from ..models import Station, Snapshot, Flow, Flight, IngestLog, Airport
+from ..models import Station, Snapshot, Flow, Flight, IngestLog, Airport, InventoryItem
 from ..schemas import LoginRequest, TokenResponse, IngestSnapshot
 from ..auth import verify_password, issue_token, require_bearer
 from ..config import config
@@ -26,7 +26,8 @@ def _now_utc() -> datetime:
 def login():
     data = LoginRequest.parse_obj(request.get_json(force=True, silent=False))
     with SessionLocal() as s:
-        st = s.execute(select(Station).where(Station.name == data.station)).scalar_one_or_none()
+        stname = (data.station or "").strip().upper()
+        st = s.execute(select(Station).where(Station.name == stname)).scalar_one_or_none()
         if not st or not verify_password(st.password_hash, data.password):
             abort(401, description="Invalid station or password")
         token = issue_token(st.id, st.token_salt or "")
@@ -161,6 +162,23 @@ def ingest():
             rec.remarks = mf.remarks or rec.remarks
             rec.last_seen_at = mf.updated_at or _now_utc()
 
+        # Replace inventory for this station (treat payload.inventory as full snapshot)
+        if payload.inventory is not None:
+            s.query(InventoryItem).filter(InventoryItem.station_id == station_id).delete(synchronize_session=False)
+            for iv in payload.inventory:
+                name = (iv.item or "").strip()
+                if not name:
+                    continue
+                s.add(InventoryItem(
+                    station_id=station_id,
+                    category=((iv.category or "")[:128].strip() or None),
+                    category_id=(iv.category_id if getattr(iv, "category_id", None) is not None else None),
+                    item=name,
+                    qty=(None if iv.qty is None else float(iv.qty)),
+                    weight_lbs=(None if iv.weight_lbs is None else float(iv.weight_lbs)),
+                    updated_at=(iv.updated_at or _now_utc())
+                ))
+
         # Log ingest
         s.add(IngestLog(station_id=station_id, status="accepted", raw=None))
         s.commit()
@@ -198,24 +216,41 @@ def get_flows():
         end = parse_iso(until) if until else now
 
     with SessionLocal() as s:
-        Snap = Snapshot
-        Fl = Flow
-        where = [Snap.generated_at >= start, Snap.generated_at <= end]
+        Snap, Fl = Snapshot, Flow
+        # Use only the *latest* snapshot per station inside the window
+        latest_sub = (
+            select(
+                Snap.station_id,
+                func.max(Snap.generated_at).label("mx")
+            )
+            .where(and_(Snap.generated_at >= start, Snap.generated_at <= end))
+            .group_by(Snap.station_id)
+            .subquery()
+        )
+        q = (
+            select(
+                Fl.origin, Fl.dest, Fl.direction,
+                func.sum(Fl.legs), func.sum(Fl.weight_lbs)
+            )
+            .join(Snap, Fl.snapshot_id == Snap.id)
+            .join(
+                latest_sub,
+                and_(
+                    latest_sub.c.station_id == Snap.station_id,
+                    latest_sub.c.mx == Snap.generated_at
+                )
+            )
+        )
+        where = []
         if direction in ("inbound", "outbound"):
             where.append(Fl.direction == direction)
         if origin:
             where.append(Fl.origin == origin)
         if dest:
             where.append(Fl.dest == dest)
-
-        rows = s.execute(
-            select(
-                Fl.origin, Fl.dest, Fl.direction,
-                func.sum(Fl.legs), func.sum(Fl.weight_lbs)
-            ).join(Snap, Fl.snapshot_id == Snap.id).where(and_(*where)).group_by(
-                Fl.origin, Fl.dest, Fl.direction
-            )
-        ).all()
+        if where:
+            q = q.where(and_(*where))
+        rows = s.execute(q.group_by(Fl.origin, Fl.dest, Fl.direction)).all()
 
         data = [
             {"origin": o, "dest": d, "direction": dr, "legs": int(legs or 0), "weight_lbs": float(w or 0.0)}
@@ -242,7 +277,7 @@ def get_station_flights(name: str):
     complete = request.args.get("complete", "open").lower()
     since = request.args.get("since")
     with SessionLocal() as s:
-        st = s.execute(select(Station).where(Station.name == name)).scalar_one_or_none()
+        st = s.execute(select(Station).where(Station.name == name.strip().upper())).scalar_one_or_none()
         if not st:
             abort(404, description="Station not found")
         q = select(Flight).where(Flight.station_id == st.id)
@@ -272,4 +307,24 @@ def get_station_flights(name: str):
             "complete": r.complete,
             "remarks": r.remarks,
             "last_seen_at": r.last_seen_at.isoformat(),
+        } for r in rows])
+
+@api.get("/stations/<name>/inventory")
+def get_station_inventory(name: str):
+    with SessionLocal() as s:
+        st = s.execute(select(Station).where(Station.name == name.strip().upper())).scalar_one_or_none()
+        if not st:
+            abort(404, description="Station not found")
+        rows = s.execute(
+            select(InventoryItem)
+            .where(InventoryItem.station_id == st.id)
+            .order_by(InventoryItem.category.asc().nullsfirst(), InventoryItem.item.asc())
+        ).scalars().all()
+        return jsonify([{
+            "category": r.category,
+            "category_id": r.category_id,
+            "item": r.item,
+            "qty": r.qty,
+            "weight_lbs": r.weight_lbs,
+            "updated_at": r.updated_at.isoformat(),
         } for r in rows])

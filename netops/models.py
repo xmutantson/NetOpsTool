@@ -21,6 +21,7 @@ class Station(Base):
 
     snapshots = relationship("Snapshot", back_populates="station", cascade="all,delete-orphan")
     flights = relationship("Flight", back_populates="station", cascade="all,delete-orphan")
+    inventory_items = relationship("InventoryItem", back_populates="station", cascade="all,delete-orphan")
 
 class Snapshot(Base):
     __tablename__ = "snapshots"
@@ -96,3 +97,22 @@ class Airport(Base):
     lat = Column(Float, nullable=False)
     lon = Column(Float, nullable=False)
     __table_args__ = (Index("ix_airports_code", "code"),)
+
+class InventoryItem(Base):
+    __tablename__ = "inventory_items"
+    id = Column(Integer, primary_key=True)
+    station_id = Column(Integer, ForeignKey("stations.id"), nullable=False)
+    category = Column(String(128), nullable=True)      # display name from sender
+    category_id = Column(Integer, nullable=True)       # optional, if provided by sender
+    item = Column(String(128), nullable=False)
+    qty = Column(Float, nullable=True)
+    weight_lbs = Column(Float, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    station = relationship("Station", back_populates="inventory_items")
+    __table_args__ = (
+        UniqueConstraint("station_id", "category", "item",
+                         name="uq_inventory_station_cat_item"),
+        Index("ix_inventory_station_item", "station_id", "item"),
+        Index("ix_inventory_station_category", "station_id", "category"),
+    )

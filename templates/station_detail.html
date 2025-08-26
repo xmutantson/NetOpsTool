@@ -1,42 +1,86 @@
-<!-- templates/station_detail.html -->
 {% extends "base.html" %}
 {% block content %}
 <h2>Station: {{ name }}</h2>
-<table class="tbl" id="flights-table">
-  <thead>
-    <tr>
-      <th>Last Seen</th><th>Code</th><th>Tail</th><th>Dir</th><th>Origin</th><th>Dest</th>
-      <th>Cargo</th><th>Weight (lbs)</th><th>T/O</th><th>ETA</th><th>Ramp</th><th>Done</th><th>Remarks</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
+<div id="grand-total" class="card" style="margin:0 0 1rem 0; padding:.5rem 1rem;">
+  <strong>Total weight (last snapshot):</strong>
+  <span id="grand-wt">—</span> lbs
+</div>
+<div id="cat-list" class="stack" style="display:grid; gap:12px;"></div>
 <script>
-async function loadFlights(){
-  const r = await fetch(`/api/stations/{{ name|tojson|safe }}/flights?complete=all`);
+async function loadInventory(){
+  const r = await fetch(`/api/stations/{{ name }}/inventory`);
+  if (!r.ok) {
+    document.getElementById('cat-list').innerHTML =
+      '<div class="card" style="padding:12px;">Inventory unavailable.</div>';
+    return;
+  }
   const rows = await r.json();
-  const tb = document.querySelector('#flights-table tbody');
-  tb.innerHTML = '';
-  for (const f of rows){
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${f.last_seen_at}</td>
-      <td>${f.flight_code||'—'}</td>
-      <td>${f.tail||'—'}</td>
-      <td>${f.direction||'—'}</td>
-      <td>${f.origin||'—'}</td>
-      <td>${f.dest||'—'}</td>
-      <td>${f.cargo_type||'—'}</td>
-      <td>${(f.cargo_weight_lbs??'—')}</td>
-      <td>${f.takeoff_hhmm||'—'}</td>
-      <td>${f.eta_hhmm||'—'}</td>
-      <td>${f.is_ramp_entry? '✓':'—'}</td>
-      <td>${f.complete? '✓':'—'}</td>
-      <td>${f.remarks||''}</td>
+  // Group rows by category name (fallback to "Uncategorized")
+  const groups = new Map();
+  let grandWt = 0;
+  for (const it of rows){
+    const cat = (it.category && it.category.trim()) ? it.category.trim() : 'Uncategorized';
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(it);
+    if (typeof it.weight_lbs === 'number') grandWt += it.weight_lbs;
+  }
+  // Render grand total (1 decimal)
+  document.getElementById('grand-wt').textContent = (Math.round(grandWt*10)/10).toFixed(1);
+
+  const container = document.getElementById('cat-list');
+  container.innerHTML = '';
+  // Sort categories A→Z
+  const sortedCats = Array.from(groups.keys()).sort((a,b)=>a.localeCompare(b));
+  for (const cat of sortedCats){
+    const items = groups.get(cat);
+    // subtotal weight for this category
+    let subWt = 0;
+    for (const it of items) if (typeof it.weight_lbs === 'number') subWt += it.weight_lbs;
+    subWt = (Math.round(subWt*10)/10).toFixed(1);
+
+    const wrap = document.createElement('details');
+    wrap.className = 'cat-block card';
+    wrap.open = true; // expanded by default
+    wrap.style.padding = '0';
+    const sum = document.createElement('summary');
+    sum.style.padding = '10px 12px';
+    sum.style.cursor = 'pointer';
+    sum.innerHTML = `<strong>${cat}</strong> &mdash; <span>${subWt} lbs</span>`;
+    wrap.appendChild(sum);
+
+    const tbl = document.createElement('table');
+    tbl.className = 'tbl';
+    tbl.style.margin = '0 12px 12px 12px';
+    tbl.innerHTML = `
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Quantity</th>
+          <th>Total Weight (lbs)</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
     `;
-    tb.appendChild(tr);
+    const tb = tbl.querySelector('tbody');
+    // sort items by name
+    items.sort((a,b)=> (a.item||'').localeCompare(b.item||''));
+    for (const it of items){
+      const tr = document.createElement('tr');
+      const qty = (it.qty ?? '');
+      const wt  = (it.weight_lbs ?? '');
+      tr.innerHTML = `
+        <td>${it.item}</td>
+        <td>${qty === '' ? '—' : qty}</td>
+        <td>${wt  === '' ? '—' : wt}</td>
+        <td>${it.updated_at || '—'}</td>
+      `;
+      tb.appendChild(tr);
+    }
+    wrap.appendChild(tbl);
+    container.appendChild(wrap);
   }
 }
-loadFlights();
+loadInventory();
 </script>
 {% endblock %}
