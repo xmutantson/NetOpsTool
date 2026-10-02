@@ -1,21 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Station: {{ name }}</h2>
+<button id="refresh">Refresh inventory</button>
+<p id="refresh-status" class="refresh-status" role="status" aria-live="polite">Loading inventory…</p>
 <div id="grand-total" class="card" style="margin:0 0 1rem 0; padding:.5rem 1rem;">
   <strong>Total weight (last snapshot):</strong>
-  <span id="grand-wt">—</span> lbs
+  <span id="grand-wt">-</span> lbs
 </div>
 <div id="cat-list" class="stack" style="display:grid; gap:12px;"></div>
 <script>
-async function loadInventory(){
-  const r = await fetch(`/api/stations/{{ name }}/inventory`);
-  if (!r.ok) {
-    document.getElementById('cat-list').innerHTML =
-      '<div class="card" style="padding:12px;">Inventory unavailable.</div>';
-    return;
-  }
-  const rows = await r.json();
-  // Group rows by category name (fallback to "Uncategorized")
+const stationName = {{ name|tojson }};
+function renderInventory(rows){
+  const container = document.getElementById('cat-list');
+  const collapsed = new Set(Array.from(container.children)
+    .filter(el => el.tagName === 'DETAILS' && !el.open).map(el => el.dataset.category));
   const groups = new Map();
   let grandWt = 0;
   for (const it of rows){
@@ -24,63 +22,51 @@ async function loadInventory(){
     groups.get(cat).push(it);
     if (typeof it.weight_lbs === 'number') grandWt += it.weight_lbs;
   }
-  // Render grand total (1 decimal)
-  document.getElementById('grand-wt').textContent = (Math.round(grandWt*10)/10).toFixed(1);
-
-  const container = document.getElementById('cat-list');
-  container.innerHTML = '';
-  // Sort categories A→Z
-  const sortedCats = Array.from(groups.keys()).sort((a,b)=>a.localeCompare(b));
+  const content = document.createDocumentFragment();
+  const sortedCats = Array.from(groups.keys()).sort((a,b) => a.localeCompare(b));
   for (const cat of sortedCats){
     const items = groups.get(cat);
-    // subtotal weight for this category
-    let subWt = 0;
-    for (const it of items) if (typeof it.weight_lbs === 'number') subWt += it.weight_lbs;
-    subWt = (Math.round(subWt*10)/10).toFixed(1);
-
+    const subtotal = items.reduce((sum, it) => sum + (typeof it.weight_lbs === 'number' ? it.weight_lbs : 0), 0);
     const wrap = document.createElement('details');
     wrap.className = 'cat-block card';
-    wrap.open = true; // expanded by default
-    wrap.style.padding = '0';
-    const sum = document.createElement('summary');
-    sum.style.padding = '10px 12px';
-    sum.style.cursor = 'pointer';
-    sum.innerHTML = `<strong>${cat}</strong> &mdash; <span>${subWt} lbs</span>`;
-    wrap.appendChild(sum);
-
-    const tbl = document.createElement('table');
-    tbl.className = 'tbl';
-    tbl.style.margin = '0 12px 12px 12px';
-    tbl.innerHTML = `
-      <thead>
-        <tr>
-          <th>Item</th>
-          <th>Quantity</th>
-          <th>Total Weight (lbs)</th>
-          <th>Updated</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-    const tb = tbl.querySelector('tbody');
-    // sort items by name
-    items.sort((a,b)=> (a.item||'').localeCompare(b.item||''));
-    for (const it of items){
-      const tr = document.createElement('tr');
-      const qty = (it.qty ?? '');
-      const wt  = (it.weight_lbs ?? '');
-      tr.innerHTML = `
-        <td>${it.item}</td>
-        <td>${qty === '' ? '—' : qty}</td>
-        <td>${wt  === '' ? '—' : wt}</td>
-        <td>${it.updated_at || '—'}</td>
-      `;
-      tb.appendChild(tr);
+    wrap.dataset.category = cat;
+    wrap.open = !collapsed.has(cat);
+    const summary = document.createElement('summary');
+    summary.appendChild(textElement('strong', cat));
+    summary.appendChild(textElement('span', ` — ${subtotal.toFixed(1)} lbs`));
+    wrap.appendChild(summary);
+    const table = document.createElement('table');
+    table.className = 'tbl';
+    const head = document.createElement('thead');
+    const heading = document.createElement('tr');
+    for (const label of ['Item', 'Quantity', 'Total Weight (lbs)', 'Updated']){
+      heading.appendChild(textElement('th', label));
     }
-    wrap.appendChild(tbl);
-    container.appendChild(wrap);
+    head.appendChild(heading);
+    table.appendChild(head);
+    const body = document.createElement('tbody');
+    items.sort((a,b) => (a.item || '').localeCompare(b.item || ''));
+    for (const it of items){
+      const row = document.createElement('tr');
+      for (const value of [it.item, it.qty ?? '-', it.weight_lbs ?? '-', it.updated_at || '-']){
+        row.appendChild(textElement('td', value));
+      }
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    wrap.appendChild(table);
+    content.appendChild(wrap);
   }
+  if (!rows.length) content.appendChild(textElement('p', 'No inventory in the latest snapshot.'));
+  container.replaceChildren(content);
+  document.getElementById('grand-wt').textContent = grandWt.toFixed(1);
 }
-loadInventory();
+const inventoryRefresh = createRefreshController({
+  load: signal => fetchRows(`/api/stations/${encodeURIComponent(stationName)}/inventory`, signal),
+  render: renderInventory,
+  status: document.getElementById('refresh-status')
+});
+document.getElementById('refresh').addEventListener('click', inventoryRefresh.request);
+inventoryRefresh.request();
 </script>
 {% endblock %}

@@ -25,7 +25,7 @@
 # scripts/smoke_netops_hubbed.sh (fixed)
 set -Eeuo pipefail
 
-HOST="http://kameron.cloud:5250"
+HOST=""
 PASS=""
 KALW_REAL=0
 KALW_FLOWS=0
@@ -39,7 +39,7 @@ Usage:
   $0 -H <host> -p <password> [--kalw-real 0|1] [--kalw-flows 0|1]
 
 Examples:
-  $0 -H 'http://kameron.cloud:5250' -p 'Full\$team' --kalw-real 1 --kalw-flows 1
+  $0 -H 'http://127.0.0.1:5250' -p '<demo-station-password>' --kalw-real 1 --kalw-flows 1
 EOF
 }
 
@@ -54,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1"; usage; exit 1;;
   esac
 done
+[[ -n "$HOST" ]] || { echo "Missing -H/--host: select a disposable demo server"; usage; exit 1; }
 [[ -n "$PASS" ]] || { echo "Missing -p/--password"; usage; exit 1; }
 
 need(){ command -v "$1" >/dev/null || { echo "Missing dependency: $1"; exit 1; }; }

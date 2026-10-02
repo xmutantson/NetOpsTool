@@ -22,9 +22,7 @@ def upgrade():
         sa.Column("qty", sa.Float(), nullable=True),
         sa.Column("weight_lbs", sa.Float(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
-    )
-    op.create_unique_constraint(
-        "uq_inventory_station_item", "inventory_items", ["station_id", "item"]
+        sa.UniqueConstraint("station_id", "item", name="uq_inventory_station_item"),
     )
     op.create_index(
         "ix_inventory_station_item", "inventory_items", ["station_id", "item"]
@@ -32,5 +30,4 @@ def upgrade():
 
 def downgrade():
     op.drop_index("ix_inventory_station_item", table_name="inventory_items")
-    op.drop_constraint("uq_inventory_station_item", "inventory_items", type_="unique")
     op.drop_table("inventory_items")

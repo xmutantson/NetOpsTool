@@ -1,9 +1,7 @@
-version: "3.8"
-
 services:
   netops:
-    image: ghcr.io/xmutantson/netops_tool:latest
-    pull_policy: always
+    build: .
+    image: netops-tool:local
     container_name: netops_tool
     ports:
       - "5250:5250"
@@ -13,6 +11,8 @@ services:
       - flask_secret:/run/secrets
     environment:
       - LOG_LEVEL=INFO
+      - NETOPS_JWT_SECRET=${NETOPS_JWT_SECRET:?Set a unique JWT secret of at least 32 characters}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set a unique admin password}
 
 volumes:
   flask_secret:

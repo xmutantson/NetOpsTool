@@ -37,7 +37,7 @@ RUN mkdir -p /app/data && chmod 755 /app/data
 RUN mkdir -p /run/secrets
 
 # Healthcheck (lightweight)
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD curl -fsS http://127.0.0.1:5250/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD curl -fsS http://127.0.0.1:5250/readyz || exit 1
 
 EXPOSE 5250
 

@@ -1,27 +1,44 @@
-<!-- templates/stations.html -->
 {% extends "base.html" %}
 {% block content %}
 <h2>Stations</h2>
+<button id="refresh">Refresh stations</button>
+<p id="refresh-status" class="refresh-status" role="status" aria-live="polite">Loading stations…</p>
 <table class="tbl" id="stations-table">
   <thead><tr><th>Name</th><th>Last Seen</th><th>Default Origin</th><th>Coords</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
-async function loadStations(){
-  const r = await fetch('/api/stations');
-  const rows = await r.json();
-  const tb = document.querySelector('#stations-table tbody');
-  tb.innerHTML = '';
+function renderStations(rows){
+  const content = document.createDocumentFragment();
   for (const st of rows){
     const tr = document.createElement('tr');
-    const link = `<a href="/stations/${encodeURIComponent(st.name)}">${st.name}</a>`;
-    const coords = (st.last_origin_lat!=null && st.last_origin_lon!=null)
-      ? `${st.last_origin_lat.toFixed(5)}, ${st.last_origin_lon.toFixed(5)}`
-      : '—';
-    tr.innerHTML = `<td>${link}</td><td>${st.last_seen_at||'—'}</td><td>${st.last_default_origin||'—'}</td><td>${coords}</td>`;
-    tb.appendChild(tr);
+    const name = document.createElement('td');
+    const link = textElement('a', st.name);
+    link.href = `/stations/${encodeURIComponent(st.name)}`;
+    name.appendChild(link);
+    tr.appendChild(name);
+    const coords = (st.last_origin_lat != null && st.last_origin_lon != null)
+      ? `${st.last_origin_lat.toFixed(5)}, ${st.last_origin_lon.toFixed(5)}` : '-';
+    for (const value of [st.last_seen_at || '-', st.last_default_origin || '-', coords]){
+      tr.appendChild(textElement('td', value));
+    }
+    content.appendChild(tr);
   }
+  if (!rows.length){
+    const row = document.createElement('tr');
+    const cell = textElement('td', 'No stations reported yet.');
+    cell.colSpan = 4;
+    row.appendChild(cell);
+    content.appendChild(row);
+  }
+  document.querySelector('#stations-table tbody').replaceChildren(content);
 }
-loadStations();
+const stationRefresh = createRefreshController({
+  load: signal => fetchRows('/api/stations', signal),
+  render: renderStations,
+  status: document.getElementById('refresh-status')
+});
+document.getElementById('refresh').addEventListener('click', stationRefresh.request);
+stationRefresh.request();
 </script>
 {% endblock %}

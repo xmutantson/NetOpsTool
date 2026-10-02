@@ -14,6 +14,9 @@ Air cargo **ops map + API**. Aggregates feeder snapshots, persists them to SQLit
   - **Axis filter**: show only east/west/north/south flows or all.
   - **Monochrome mode**: single color for all flows; direction is still clear via animated beads.
   - **Legend** explains colors and station status.
+  - Data refreshes every 30 seconds. The refresh status shows the last successful
+    update or a stale/error message; Apply refreshes airports, stations and flows.
+    Station colors also age between refreshes.
 - **Station dots** (always above flows), sized by zoom:
   - Status thresholds (based on `last_seen_at`, interpreted as **UTC** if no timezone):
     - ≤ 90s: **online** (green)
@@ -27,7 +30,8 @@ Air cargo **ops map + API**. Aggregates feeder snapshots, persists them to SQLit
 
 - **Backend**: Python 3.11 / Flask, Waitress, SQLite (file DB).
 - **Frontend**: Leaflet + vanilla JS/CSS (no build step).
-- **Container image**: `ghcr.io/xmutantson/netops_tool:latest`
+- **Container**: the checked-in Compose file builds this source as `netops-tool:local`.
+  The previously published `ghcr.io/xmutantson/netops_tool:latest` is not assumed to contain these changes.
 - **Port**: `5250`
 - **Data path** (SQLite): `/app/data/netops.db`  
   Recommend bind-mounting `./data:/app/data` to keep data between runs.
@@ -36,62 +40,65 @@ Air cargo **ops map + API**. Aggregates feeder snapshots, persists them to SQLit
 
 ## Quick start (Docker Compose)
 
-Create `docker-compose.yml`:
-
-```yaml
-services:
-  netops:
-    image: ghcr.io/xmutantson/netops_tool:latest
-    container_name: netops_tool
-    pull_policy: always
-    ports:
-      - "5250:5250"
-    environment:
-      # Optional but recommended
-      - NETOPS_JWT_SECRET=change-me
-      # Optional: set to require this header for admin endpoints (e.g. /api/airports)
-      - ADMIN_PASSWORD=change-me-admin
-    volumes:
-      # Persist the SQLite DB
-      - ./data:/app/data
-```
-
-Then:
+Use the checked-in Compose file. Generate unique credentials into a local `.env`
+(which is ignored by Git), then build and start the source checkout:
 
 ```bash
-docker compose up -d
-# Health checks
+python - <<'PYENV'
+import os
+import secrets
+fd = os.open(".env", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as stream:
+    stream.write("NETOPS_JWT_SECRET=" + secrets.token_urlsafe(32) + "\n")
+    stream.write("ADMIN_PASSWORD=" + secrets.token_urlsafe(32) + "\n")
+PYENV
+chmod 600 .env
+docker compose up --build -d
 curl -fsS http://localhost:5250/healthz
 curl -fsS http://localhost:5250/readyz
 ```
+
+Do not overwrite an existing `.env` when upgrading. Retain the JWT secret to keep
+existing feeder credentials usable. The Flask signing secret is generated once
+in the persistent `flask_secret` volume. Production startup rejects missing or
+placeholder credentials. Before upgrading an existing install, stop NetOps and
+copy the entire `./data` directory (including any SQLite WAL files) to a separate
+backup location. Test upgrades on that copy before using the original database.
+Startup migrates the configured database and stops on an unknown/incompatible
+schema; it never moves the database aside or recreates it automatically.
+
+Pages and read APIs remain public by design. `ADMIN_PASSWORD` protects airport
+writes; it is not a read-access gate. Use a private network or an authenticated
+reverse proxy if cargo/station information must be private, and HTTPS for network
+access. An unset admin password disables airport writes, including in development.
 
 ---
 
 ## Bootstrap stations (for feeder auth)
 
-Create a station and password inside the container:
+Create stations inside the container. The shared password below is for a disposable
+demo only; use a unique password for each real feeder:
 
 ```bash
 # Add stations you plan to use
-docker compose exec -T netops_tool python -m netops.cli add-station SEA netops-demo-2025
-docker compose exec -T netops_tool python -m netops.cli add-station BFI netops-demo-2025
-docker compose exec -T netops_tool python -m netops.cli add-station PAE netops-demo-2025
-docker compose exec -T netops_tool python -m netops.cli add-station GEG netops-demo-2025
-docker compose exec -T netops_tool python -m netops.cli add-station PSC netops-demo-2025
+docker compose exec -T netops python -m netops.cli add-station SEA netops-demo-2025
+docker compose exec -T netops python -m netops.cli add-station BFI netops-demo-2025
+docker compose exec -T netops python -m netops.cli add-station PAE netops-demo-2025
+docker compose exec -T netops python -m netops.cli add-station GEG netops-demo-2025
+docker compose exec -T netops python -m netops.cli add-station PSC netops-demo-2025
 
 # Forgot a password?
-docker compose exec -T netops_tool python -m netops.cli reset-station-password SEA newpass
+docker compose exec -T netops python -m netops.cli reset-station-password SEA "<new-unique-station-password>"
 ```
 
 ---
 
 ## Seed airports (admin)
 
-Airports can be upserted via the admin endpoint. If you set `ADMIN_PASSWORD` in Compose, pass it as the `X-Admin-Password` header:
+Airports can be upserted via the admin endpoint. Set the shell variable
+`ADMIN_PASSWORD` to the value configured in `.env`, and pass it as a header:
 
 ```bash
-ADMIN_PASSWORD=change-me-admin
-
 curl -X POST http://localhost:5250/api/airports \
   -H 'Content-Type: application/json' \
   -H "X-Admin-Password: ${ADMIN_PASSWORD}" \
@@ -107,29 +114,33 @@ curl -X POST http://localhost:5250/api/airports \
 **1) Login to get a bearer token**
 
 ```bash
-TOKEN=$(curl -s http://localhost:5250/api/login \
+TOKEN=$(curl -fsS http://localhost:5250/api/login \
   -H 'Content-Type: application/json' \
   -d '{"station":"SEA","password":"netops-demo-2025"}' | jq -r .token)
 ```
 
 **2) POST an ingest snapshot**
 
+Use the current UTC timestamp for `generated_at` and `updated_at`; the fixed
+sample dates below illustrate the format and will not appear in today's map.
+Naive timestamps are interpreted as UTC, and timezone offsets are normalized.
+
 The server **persists manifests** and **aggregates flows by origin→dest** (direction is not used for aggregation). When both A→B and B→A are present, the map will draw both and **split** them visually.
 
 ```bash
-curl -s http://localhost:5250/api/ingest \
+curl -fsS http://localhost:5250/api/ingest \
   -H "Authorization: Bearer ${TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{
     "station": "SEA",
-    "generated_at": "2025-08-24T00:00:00Z",     // ISO8601; if no timezone, treated as UTC
+    "generated_at": "2025-08-24T00:00:00Z",
     "default_origin": "KSEA",
     "origin_coords": {"lat": 47.4502, "lon": -122.3088},
 
-    "window_hours": 24,                         // optional; used by UI queries
+    "window_hours": 24,
     "flows": [
-      {"origin":"KSEA","dest":"KBFI","legs":2,"weight_lbs":1800.0},
-      {"origin":"KSEA","dest":"KGEG","legs":3,"weight_lbs":4200.0}
+      {"origin":"KSEA","dest":"KBFI","direction":"outbound","legs":2,"weight_lbs":1800.0},
+      {"origin":"KSEA","dest":"KGEG","direction":"outbound","legs":3,"weight_lbs":4200.0}
     ],
     "manifests": [
       {
@@ -146,6 +157,33 @@ curl -s http://localhost:5250/api/ingest \
     ]
   }'
 ```
+
+### Snapshot and correction contract
+
+- `generated_at` identifies a snapshot per station. An older generation than the
+  station's latest accepted snapshot is rejected with HTTP 409 before modifying
+  current data; resending the same generation replaces its flows idempotently.
+- `flows` is a complete set for that snapshot; omitting it means no flows.
+- Omit `inventory` (or send `null`) to leave existing cargo untouched. Send `"inventory": []` to
+  clear it. A supplied list replaces that station's inventory atomically.
+- Manifests are upserts. Omitted fields preserve existing values; explicit `0`
+  clears a boolean flag and an empty remarks string clears remarks.
+- `flight_id` and `aoct_flight_id` name the same feeder identifier; conflicting
+  values are rejected. `direction` remains required on flow rows.
+- Invalid request fields receive structured client errors (HTTP 422). Coordinates
+  and numeric values must be finite and in their permitted ranges. Requests are
+  limited to 8 MiB and each row list to 10,000 entries.
+- A `generated_at` or manifest `updated_at` more than five minutes in the future
+  is rejected with HTTP 422. Keep feeder clocks synchronized. An older manifest
+  update cannot replace a newer state for the same identified flight.
+- Password reset rotates a station's token version. Existing tokens stop working;
+  the feeder must log in again.
+
+`flight_code` remains a shared, globally unique identifier. Its existing ownership
+semantics are preserved: the first reporting station owns the flight record.
+Whether one flight should have multiple station observations, and whether different
+feeders' route totals can overlap, still needs an agreed feeder contract. Do not
+interpret aggregated totals as independently deduplicated physical flights.
 
 ---
 
@@ -169,14 +207,17 @@ curl -s http://localhost:5250/api/ingest \
 
 ## UI controls (top of the map)
 
-- **Hours**: time window for `/api/flows?hours=…` request.
+- **Snapshot recency**: latest snapshot per station generated within this many hours.
+  This does not recalculate cargo totals for that duration; feeders supply their
+  own snapshot `window_hours`.
 - **Axis filter**: `all | east | west | north | south`.
 - **Color mode**: `cardinal | mono`.
 - **Animate beads**: on/off.
 - **Beads Max**: `ballsMax` (1–12).
 - **Weight @ Max**: `weightAtMax` (lbs) — weight that yields the full `ballsMax` beads.
 
-> Internally, the frontend always requests `direction=all` and **ignores “inbound/outbound”**. Everything is computed and rendered purely from **origin → dest**.
+> The map combines inbound/outbound reports by origin and destination. The API
+> still supports filtering by `direction`; the map filters cardinal directions.
 
 ---
 
@@ -186,6 +227,7 @@ Read endpoints (no auth):
 - `GET /api/flows?hours=24&direction=all`
 - `GET /api/stations`
 - `GET /api/stations/{CODE}/flights?complete=all`
+- `GET /api/stations/{CODE}/inventory`
 - `GET /api/airports`
 
 Auth/admin:
@@ -194,28 +236,39 @@ Auth/admin:
 - `POST /api/airports` (admin; `X-Admin-Password` header)
 
 Health:
-- `GET /healthz`, `GET /readyz`
+- `GET /healthz`: process liveness.
+- `GET /readyz`: database/schema readiness; failures return a non-success status.
 
 ---
 
 ## Smoke data (optional)
 
-A helper script at `scripts/smoke_netops.sh` can seed five WA airports (KSEA/KBFI/KPAE/KGEG/KPSC), add stations, and ingest demo flows/manifests. Usage:
+These are data generators, not regression tests. Run them only against disposable
+data: they write coordinates, snapshots, manifests and optionally inventory. They
+require an explicit server target and existing station accounts.
+
+`scripts/smoke_netops.sh` seeds five WA airports (KSEA/KBFI/KPAE/KGEG/KPSC) and
+ingests demo flows. Create SEA/BFI/PAE/GEG/PSC first using the demo password above.
+Set `ADMIN_PASSWORD` in your shell to the configured value, then:
 
 ```bash
 # From repo root
 HOST=http://localhost:5250 \
 PASS=netops-demo-2025 \
-ADMIN_PASSWORD=change-me-admin \
 bash ./scripts/smoke_netops.sh
 ```
 
-It prints current stations and flows and opens the map URL at the end.
+It prints current stations and flows and the map URL. The hubbed generator also
+requires `-H <disposable-server-url>` and pre-existing station accounts. Neither
+script is part of the offline test suite.
 
 ---
 
 ## Resetting / recovery tips
 
+- **Unknown schema at startup?** Keep the original file and work on a backup. Do not
+  stamp a revision blindly or delete data to make startup pass. The former
+  automatic repair/reinitialization behavior has been removed.
 - **Wiped DB?** The SQLite file is at `/app/data/netops.db`. If you removed it:
   1) start the container (DB will be re-created),  
   2) re-run the **station CLI** to add/reset station passwords,  
@@ -231,11 +284,13 @@ It prints current stations and flows and opens the map URL at the end.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 # DB at /app/data inside container; locally you can set:
-export DATABASE_URL="sqlite:////$(pwd)/data/netops.db"
-export NETOPS_JWT_SECRET=change-me
+mkdir -p data
+export DATABASE_URL="sqlite:///$(pwd)/data/netops.db"
 export FLASK_ENV=development
+export ADMIN_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python -m netops.migrate
 waitress-serve --port=5250 netops.app:app
 ```
 
@@ -250,4 +305,26 @@ Open http://localhost:5250.
 
 ---
 
-Happy flying ✈️
+## Offline regression checks
+
+Python 3.11 and Node.js 18+ are sufficient; no browser, external API, running
+NetOps server, or Docker daemon is required:
+
+```bash
+python -m pytest -q
+node --test tests/frontend/*.test.js
+```
+
+Tests use temporary SQLite databases, synthetic feeder data, mocked browser
+objects, and no live service calls. Migration tests cover fresh databases,
+historical revisions, custom paths, repeated startup, and preservation checks.
+API tests check corrections, stale uploads, token reset behavior and request
+validation. Frontend tests check route separation, refresh/error behavior and
+safe rendering. Shell checks use Bash or Git Bash when available.
+
+Container builds, production upgrades, real feeder compatibility and visual
+Leaflet/browser rendering still require their own isolated acceptance check.
+Snapshot/log retention and a multi-station flight provenance model remain future
+work; no automatic pruning has been introduced. Rate limits currently use
+process-local memory, so deployments with multiple processes would need a shared
+limiter store before relying on a global request limit.

@@ -15,6 +15,13 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from netops.db import Base  # noqa
+from netops import models  # noqa: F401
+
+# Programmatic migrations set an explicit URL; CLI invocations honor the same
+# DATABASE_URL as the application. Escape percent signs for ConfigParser.
+database_url = config.attributes.get("database_url") or os.getenv("DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

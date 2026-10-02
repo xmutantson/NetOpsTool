@@ -1,25 +1,32 @@
 # netops/routes/api.py
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Tuple
-from flask import Blueprint, jsonify, request, abort, current_app
-from sqlalchemy import func, select, and_, or_, text
-from sqlalchemy.exc import IntegrityError
+import math
+import secrets
+from flask import Blueprint, jsonify, request, abort
+from sqlalchemy import func, select, and_, text
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 from ..db import SessionLocal
 from ..models import Station, Snapshot, Flow, Flight, IngestLog, Airport, InventoryItem
-from ..schemas import LoginRequest, TokenResponse, IngestSnapshot
+from ..schemas import AirportRequest, LoginRequest, TokenResponse, IngestSnapshot
 from ..auth import verify_password, issue_token, require_bearer
 from ..config import config
+from ..timeutil import utc_naive
 
 api = Blueprint("api", __name__, url_prefix="/api")
 # Create the limiter here; app binding happens in app.py via limiter.init_app(app)
 limiter: Limiter = Limiter(key_func=get_remote_address)
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return utc_naive(datetime.now(timezone.utc))
+
+def _parse_iso(value: str, field: str) -> datetime:
+    try:
+        return utc_naive(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except (ValueError, OverflowError):
+        abort(400, description=f"Invalid {field}")
 
 @api.post("/login")
 @limiter.limit(lambda: config.LOGIN_RATE)
@@ -43,16 +50,14 @@ def list_airports():
 
 @api.post("/airports")
 def upsert_airport():
-    # Admin gate (simple shared secret via ADMIN_PASSWORD header)
+    # Airport changes are unavailable until an administrator is configured.
     admin = request.headers.get("X-Admin-Password", "")
-    if config.ADMIN_PASSWORD and admin != config.ADMIN_PASSWORD:
+    if not config.ADMIN_PASSWORD:
+        abort(503, description="Airport administration is not configured")
+    if not secrets.compare_digest(admin.encode(), config.ADMIN_PASSWORD.encode()):
         abort(403, description="Forbidden")
-    js = request.get_json(force=True)
-    code = (js.get("code") or "").strip().upper()
-    lat = float(js.get("lat"))
-    lon = float(js.get("lon"))
-    if not code:
-        abort(400, description="code required")
+    data = AirportRequest.parse_obj(request.get_json(force=True))
+    code, lat, lon = data.code, data.lat, data.lon
     with SessionLocal() as s:
         a = s.get(Airport, code)
         if not a:
@@ -66,13 +71,24 @@ def upsert_airport():
 @api.post("/ingest")
 @limiter.limit(lambda: config.INGEST_RATE)
 def ingest():
-    station_id, _claims = require_bearer()
+    station_id, claims = require_bearer()
     payload = IngestSnapshot.parse_obj(request.get_json(force=True, silent=False))
+    if payload.generated_at > _now_utc() + timedelta(minutes=5):
+        abort(422, description="generated_at is more than five minutes in the future")
 
     with SessionLocal() as s:
-        st = s.get(Station, station_id)
+        # Serialize SQLite snapshot checks and writes so simultaneous retries or
+        # out-of-order deliveries cannot pass the stale check together.
+        if s.get_bind().dialect.name == "sqlite":
+            s.execute(text("BEGIN IMMEDIATE"))
+        st = s.execute(select(Station).where(Station.id == station_id).with_for_update()).scalar_one_or_none()
         if not st or st.name != payload.station:
             abort(401, description="Token/station mismatch")
+        if not secrets.compare_digest(claims["salt"].encode(), (st.token_salt or "").encode()):
+            abort(401, description="Token has been revoked")
+        latest = s.execute(select(func.max(Snapshot.generated_at)).where(Snapshot.station_id == station_id)).scalar()
+        if latest is not None and payload.generated_at < utc_naive(latest):
+            abort(409, description="Snapshot is older than the latest accepted snapshot")
 
         # Update station last-seen + origin info
         st.last_seen_at = _now_utc()
@@ -91,7 +107,7 @@ def ingest():
                     a.lat, a.lon = payload.origin_coords.lat, payload.origin_coords.lon
 
         # Snapshot de-dupe
-        gen_at = payload.generated_at if payload.generated_at.tzinfo else payload.generated_at.replace(tzinfo=timezone.utc)
+        gen_at = payload.generated_at
         snap = s.execute(
             select(Snapshot).where(
                 Snapshot.station_id == station_id,
@@ -103,11 +119,15 @@ def ingest():
             snap = Snapshot(
                 station_id=station_id,
                 generated_at=gen_at,
-                window_hours=int(payload.window_hours or 24),
+                window_hours=payload.window_hours,
                 inventory_last_update=payload.inventory_last_update or None
             )
             s.add(snap)
             s.flush()  # get id
+        else:
+            snap.window_hours = payload.window_hours
+            if "inventory_last_update" in payload.__fields_set__:
+                snap.inventory_last_update = payload.inventory_last_update
 
         # Replace flows for this snapshot (idempotent)
         s.query(Flow).filter(Flow.snapshot_id == snap.id).delete(synchronize_session=False)
@@ -121,7 +141,8 @@ def ingest():
                 weight_lbs=float(fr.weight_lbs or 0.0),
             ))
 
-        # Upsert manifests into flights (last state wins)
+        # Apply only present fields and do not regress an individual flight's
+        # source timestamp, including reports from a second feeder.
         for mf in payload.manifests:
             aoct_id = None
             if mf.flight_id is not None:
@@ -140,27 +161,32 @@ def ingest():
                     Flight.dest == mf.dest.strip().upper(),
                     Flight.takeoff_hhmm == mf.takeoff_hhmm.zfill(4),
                     Flight.complete == 0
-                ).order_by(Flight.last_seen_at.desc())).scalar_one_or_none()
+                ).order_by(Flight.last_seen_at.desc(), Flight.id.desc())).scalars().first()
 
+            updated_at = mf.updated_at or gen_at
+            if updated_at > _now_utc() + timedelta(minutes=5):
+                abort(422, description="Manifest updated_at is more than five minutes in the future")
+            if rec is not None and rec.last_seen_at is not None and updated_at < utc_naive(rec.last_seen_at):
+                continue
             if not rec:
                 rec = Flight(station_id=station_id, first_seen_at=_now_utc())
                 s.add(rec)
 
-            # Assign/overwrite fields
-            rec.aoct_flight_id = aoct_id if aoct_id is not None else rec.aoct_flight_id
-            rec.flight_code = mf.flight_code or rec.flight_code
-            rec.tail = (mf.tail or rec.tail or "").upper() or None
-            rec.direction = mf.direction or rec.direction
-            rec.origin = (mf.origin or rec.origin or "").upper() or None
-            rec.dest = (mf.dest or rec.dest or "").upper() or None
-            rec.cargo_type = mf.cargo_type or rec.cargo_type
-            rec.cargo_weight_lbs = mf.cargo_weight_lbs if mf.cargo_weight_lbs is not None else rec.cargo_weight_lbs
-            rec.takeoff_hhmm = mf.takeoff_hhmm or rec.takeoff_hhmm
-            rec.eta_hhmm = mf.eta_hhmm or rec.eta_hhmm
-            rec.is_ramp_entry = int(mf.is_ramp_entry or rec.is_ramp_entry or 0)
-            rec.complete = int(mf.complete or rec.complete or 0)
-            rec.remarks = mf.remarks or rec.remarks
-            rec.last_seen_at = mf.updated_at or _now_utc()
+            if aoct_id is not None:
+                rec.aoct_flight_id = aoct_id
+            if mf.flight_code is not None:
+                rec.flight_code = mf.flight_code
+            for field in ("tail", "direction", "origin", "dest", "cargo_type", "cargo_weight_lbs",
+                          "takeoff_hhmm", "eta_hhmm", "remarks"):
+                if field in mf.__fields_set__:
+                    setattr(rec, field, getattr(mf, field))
+            for field in ("is_ramp_entry", "complete"):
+                value = getattr(mf, field)
+                if field in mf.__fields_set__ and value is not None:
+                    setattr(rec, field, value)
+            rec.last_seen_at = updated_at
+            # Later rows in this batch must find newly inserted identifiers.
+            s.flush()
 
         # Replace inventory for this station (treat payload.inventory as full snapshot)
         if payload.inventory is not None:
@@ -188,6 +214,8 @@ def ingest():
 def get_flows():
     q = request.args
     direction = q.get("direction", "all").lower()
+    if direction not in {"all", "inbound", "outbound"}:
+        abort(400, description="Invalid direction")
     origin = (q.get("origin") or "").strip().upper()
     dest = (q.get("dest") or "").strip().upper()
     hours = q.get("hours")
@@ -201,19 +229,17 @@ def get_flows():
     if hours:
         try:
             span = float(hours)
-        except ValueError:
+            if not math.isfinite(span) or not 0 < span <= 8760:
+                raise ValueError("Invalid span")
+        except (ValueError, OverflowError):
             abort(400, description="Invalid hours")
         start = now - timedelta(hours=span)
         end = now
     else:
-        # parse since/until or default 24h
-        def parse_iso(s: str) -> datetime:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        start = parse_iso(since) if since else now - timedelta(hours=24)
-        end = parse_iso(until) if until else now
+        start = _parse_iso(since, "since") if since else now - timedelta(hours=24)
+        end = _parse_iso(until, "until") if until else now
+    if start > end:
+        abort(400, description="since must not be after until")
 
     with SessionLocal() as s:
         Snap, Fl = Snapshot, Flow
@@ -275,21 +301,20 @@ def get_stations():
 @api.get("/stations/<name>/flights")
 def get_station_flights(name: str):
     complete = request.args.get("complete", "open").lower()
+    if complete not in {"all", "open", "0", "1", "true", "false"}:
+        abort(400, description="Invalid complete filter")
     since = request.args.get("since")
     with SessionLocal() as s:
         st = s.execute(select(Station).where(Station.name == name.strip().upper())).scalar_one_or_none()
         if not st:
             abort(404, description="Station not found")
         q = select(Flight).where(Flight.station_id == st.id)
-        if complete == "open" or complete == "0":
+        if complete in {"open", "0", "false"}:
             q = q.where(Flight.complete == 0)
         elif complete == "1" or complete == "true":
             q = q.where(Flight.complete == 1)
         if since:
-            try:
-                dt = datetime.fromisoformat(since.replace("Z","+00:00"))
-            except Exception:
-                abort(400, description="Invalid since")
+            dt = _parse_iso(since, "since")
             q = q.where(Flight.last_seen_at >= dt)
         q = q.order_by(Flight.last_seen_at.desc())
         rows = s.execute(q).scalars().all()
