@@ -9,7 +9,7 @@ a{color:var(--accent);text-decoration:none}
 .brand{font-weight:700}
 .container{padding:16px; flex:1;}
 #map{height:70vh;border:1px solid #222;border-radius:8px;margin-top:8px}
-.controls{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
 .tbl{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden}
 .tbl th,.tbl td{padding:8px 10px;border-bottom:1px solid #222}
 .tbl th{background:#11161b;text-align:left}
@@ -40,3 +40,7 @@ button{background:var(--accent);color:#001b3a;border:0;padding:8px 12px;border-r
 .dot-idle{ background:#f59e0b; }
 .dot-offline{ background:#ef4444; }
 .leaflet-tooltip.flow-tip { pointer-events: none; }
+.flow-tip { white-space:pre-line; }
+.data-note,.refresh-status { color:var(--muted); }
+.refresh-status[data-state="stale"] { color:#f59e0b; }
+.cat-block summary { padding:10px 12px; cursor:pointer; }

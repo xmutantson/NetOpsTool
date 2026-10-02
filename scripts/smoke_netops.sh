@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${HOST:-http://192.168.2.59:5250}"
+HOST="${HOST:?Set HOST explicitly to a disposable demo server, e.g. http://127.0.0.1:5250}"
 PASS="${PASS:-netops-demo-2025}"
 INCLUDE_SELF="${INCLUDE_SELF:-1}"   # 1 = include SEA→SEA etc. (25 total), 0 = exclude (20 total)
 ADMIN_HEADER=()

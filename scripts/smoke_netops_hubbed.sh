@@ -25,7 +25,7 @@
 # scripts/smoke_netops_hubbed.sh (fixed)
 set -Eeuo pipefail
 
-HOST="http://kameron.cloud:5250"
+HOST=""
 PASS=""
 KALW_REAL=0
 KALW_FLOWS=0
@@ -39,7 +39,7 @@ Usage:
   $0 -H <host> -p <password> [--kalw-real 0|1] [--kalw-flows 0|1]
 
 Examples:
-  $0 -H 'http://kameron.cloud:5250' -p 'Full\$team' --kalw-real 1 --kalw-flows 1
+  $0 -H 'http://127.0.0.1:5250' -p '<demo-station-password>' --kalw-real 1 --kalw-flows 1
 EOF
 }
 
@@ -54,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1"; usage; exit 1;;
   esac
 done
+[[ -n "$HOST" ]] || { echo "Missing -H/--host: select a disposable demo server"; usage; exit 1; }
 [[ -n "$PASS" ]] || { echo "Missing -p/--password"; usage; exit 1; }
 
 need(){ command -v "$1" >/dev/null || { echo "Missing dependency: $1"; exit 1; }; }
@@ -219,10 +220,12 @@ for S in "${STATIONS[@]}"; do
     manifests_json='[]'
     note="(kalw-real=1; flows=$( ((KALW_FLOWS)) && echo on || echo off ))"
   else
-    # Small fake manifest set (2 items) for non-KALW
+    # Two persistent synthetic flight slots per station. Re-running refreshes
+    # these same demo flights (not a history of daily departures). IDs are scoped
+    # to each station; reserve 900000001/2 for this disposable demo dataset.
     manifests_json="$(jq -n --arg tail "${S}-T1" --arg o "$S" --arg d "${dests[0]:-KBFI}" \
-      '[ {tail:$tail, direction:"outbound", origin:$o, dest:$d, cargo_type:"Food", cargo_weight_lbs: 200.5, takeoff_hhmm:"0900", eta_hhmm:"1030", is_ramp_entry:1, complete:0, remarks:"smoke"} ,
-         {tail:$tail, direction:"outbound", origin:$o, dest:$d, cargo_type:"Medical", cargo_weight_lbs: 120.0, takeoff_hhmm:"1300", eta_hhmm:"1415", is_ramp_entry:1, complete:0, remarks:"smoke"} ]')"
+      '[ {tail:$tail, direction:"outbound", origin:$o, dest:$d, flight_id:900000001, cargo_type:"Food", cargo_weight_lbs: 200.5, takeoff_hhmm:"0900", eta_hhmm:"1030", is_ramp_entry:1, complete:0, remarks:"smoke"} ,
+         {tail:$tail, direction:"outbound", origin:$o, dest:$d, flight_id:900000002, cargo_type:"Medical", cargo_weight_lbs: 120.0, takeoff_hhmm:"1300", eta_hhmm:"1415", is_ramp_entry:1, complete:0, remarks:"smoke"} ]')"
     note=""
   fi
 

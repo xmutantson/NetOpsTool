@@ -3,19 +3,11 @@
 {% block content %}
 <h2>Cargo Flows</h2>
 <div class="controls">
-  <!-- Existing controls -->
-  <label>Window:
+  <label>Latest snapshot within:
     <select id="hours">
       <option value="6">6h</option>
       <option value="24" selected>24h</option>
       <option value="72">72h</option>
-    </select>
-  </label>
-  <label>Direction:
-    <select id="direction">
-      <option value="all" selected>All</option>
-      <option value="inbound">Inbound</option>
-      <option value="outbound">Outbound</option>
     </select>
   </label>
   <!-- New: axis filter (cardinal) -->
@@ -51,6 +43,8 @@
 
   <button id="refresh">Apply</button>
 </div>
+<p class="data-note">Flows use each station's latest snapshot if generated within this period; weights are not totals over time.</p>
+<p id="refresh-status" class="refresh-status" role="status" aria-live="polite">Loading map data…</p>
 <div id="map"></div>
 <div id="flows-table"></div>
 <script src="{{ url_for('static', filename='js/map.js') }}"></script>

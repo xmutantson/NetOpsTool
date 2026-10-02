@@ -9,6 +9,6 @@ SessionLocal = scoped_session(sessionmaker(bind=engine, autoflush=False, autocom
 Base = declarative_base()
 
 def init_db():
-    # Fallback bootstrap so the app is usable even before Alembic runs.
-    from . import models  # noqa: F401
-    Base.metadata.create_all(bind=engine)
+    # The CLI and container use the same versioned schema path.
+    from .migrate import upgrade_database
+    upgrade_database(config.DATABASE_URL)

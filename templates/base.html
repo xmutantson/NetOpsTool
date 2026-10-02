@@ -13,6 +13,83 @@
           crossorigin=""></script>
 </head>
 <body>
+<script>
+function textElement(tag, text){
+  const el = document.createElement(tag);
+  el.textContent = text == null ? '' : String(text);
+  return el;
+}
+
+async function fetchRows(url, signal){
+  const response = await fetch(url, {signal, cache: 'no-store'});
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const rows = await response.json();
+  if (!Array.isArray(rows)) throw new Error('Unexpected response');
+  return rows;
+}
+
+// Serialize refreshes and discard results superseded by a new filter selection.
+function createRefreshController({load, render, status, intervalMs = 30000}){
+  let active = null, controller = null, queued = false, version = 0;
+  let lastUpdated = null, failure = '', stopped = false;
+  function showStatus(loading = false){
+    const stale = !!failure || (lastUpdated !== null && Date.now() - lastUpdated > intervalMs * 2);
+    status.dataset.state = stale ? 'stale' : (loading ? 'loading' : 'current');
+    const checked = lastUpdated === null ? 'No successful refresh yet.'
+      : `Last refreshed: ${new Date(lastUpdated).toLocaleString()}.`;
+    status.textContent = `${stale ? 'Stale data. ' : ''}${failure ? `Refresh failed (${failure}). ` : ''}${checked}${loading ? ' Refreshing…' : ' Auto-refresh every 30s.'}`;
+  }
+  function request(){
+    if (stopped) return Promise.resolve();
+    version++;
+    queued = true;
+    if (active){
+      controller?.abort();
+      return active;
+    }
+    active = (async () => {
+      while (queued && !stopped){
+        queued = false;
+        const currentVersion = version;
+        controller = new AbortController();
+        const currentController = controller;
+        let timedOut = false;
+        const timeout = setTimeout(() => { timedOut = true; currentController.abort(); }, 15000);
+        showStatus(true);
+        try {
+          const data = await load(currentController.signal);
+          if (stopped || currentVersion !== version) continue;
+          if (timedOut) throw new Error('request timed out');
+          render(data);
+          lastUpdated = Date.now();
+          failure = '';
+        } catch (error){
+          if (!stopped && currentVersion === version){
+            failure = timedOut ? 'request timed out' : (error.message || 'network error');
+          }
+        } finally {
+          clearTimeout(timeout);
+          // Also cancel sibling requests if one resource failed.
+          currentController.abort();
+        }
+        if (!stopped) showStatus();
+      }
+    })().finally(() => { active = null; });
+    return active;
+  }
+  const poll = setInterval(() => { if (!active) request(); }, intervalMs);
+  const freshness = setInterval(() => showStatus(!!active), 5000);
+  function stop(){
+    stopped = true;
+    queued = false;
+    controller?.abort();
+    clearInterval(poll);
+    clearInterval(freshness);
+  }
+  window.addEventListener('pagehide', event => { if (!event.persisted) stop(); });
+  return {request, stop};
+}
+</script>
 <header class="topbar">
   <div class="brand">NetOpsTool</div>
   <nav>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import jwt
 from datetime import datetime, timezone
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 from flask import request, abort
 from typing import Optional, Tuple
 from .config import config
@@ -16,13 +16,13 @@ def hash_password(pw: str) -> str:
 def verify_password(phash: str, pw: str) -> bool:
     try:
         return _ph.verify(phash, pw)
-    except VerifyMismatchError:
+    except (VerificationError, InvalidHashError):
         return False
 
 def issue_token(station_id: int, token_salt: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
-        "sub": station_id,
+        "sub": str(station_id),
         "iat": int(now.timestamp()),
         "exp": int((now + config.TOKEN_TTL).timestamp()),
         "salt": token_salt,
@@ -40,7 +40,13 @@ def require_bearer() -> Tuple[int, dict]:
     if not token:
         abort(401, description="Missing bearer token")
     try:
-        payload = jwt.decode(token, config.NETOPS_JWT_SECRET, algorithms=["HS256"])
-    except jwt.PyJWTError:
+        payload = jwt.decode(
+            token, config.NETOPS_JWT_SECRET, algorithms=["HS256"],
+            options={"require": ["sub", "iat", "exp", "salt"]},
+        )
+        station_id = int(payload["sub"])
+        if station_id <= 0 or not isinstance(payload["salt"], str):
+            raise ValueError("Invalid claims")
+    except (jwt.PyJWTError, ValueError, TypeError):
         abort(401, description="Invalid token")
-    return int(payload["sub"]), payload
+    return station_id, payload

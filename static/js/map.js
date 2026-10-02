@@ -10,6 +10,7 @@ let stationsPane = 'stations';
 let flowBeads = [];           // { marker, a:LatLng, b:LatLng, t:number }
 let animRAF = 0;
 let lastAnimTs = 0;
+let mapRefresh;
 
 // UI helpers
 const $ = (id) => document.getElementById(id);
@@ -72,13 +73,6 @@ function buildOppositeDirMap(rows){
   return m;
 }
 
-async function ensureAirports(){
-  if (airports.size) return;
-  const r = await fetch('/api/airports');
-  const rows = await r.json();
-  for (const a of rows){ airports.set(a.code.toUpperCase(), [a.lat, a.lon]); }
-}
-
 // Compute primary cardinal direction from A -> B in SCREEN space
 // (guarantees what you see matches the color)
 function primaryCardinal(A, B){
@@ -90,18 +84,19 @@ function primaryCardinal(A, B){
   return dy >= 0 ? 'S' : 'N';
 }
 
-function segmentWithOffset(A, B, offsetPx){
-  if (!offsetPx) return [A, B];
-  const p1 = map.latLngToLayerPoint(A);
-  const p2 = map.latLngToLayerPoint(B);
+function offsetPoints(p1, p2, offsetPx){
   const dx = p2.x - p1.x, dy = p2.y - p1.y;
   const len = Math.hypot(dx, dy) || 1;
   // Perpendicular unit normal
   const nx = -dy / len, ny = dx / len;
   const offx = nx * offsetPx, offy = ny * offsetPx;
-  const A2 = map.layerPointToLatLng(L.point(p1.x + offx, p1.y + offy));
-  const B2 = map.layerPointToLatLng(L.point(p2.x + offx, p2.y + offy));
-  return [A2, B2];
+  return [{x:p1.x + offx, y:p1.y + offy}, {x:p2.x + offx, y:p2.y + offy}];
+}
+
+function segmentWithOffset(A, B, offsetPx){
+  if (!offsetPx) return [A, B];
+  return offsetPoints(map.latLngToLayerPoint(A), map.latLngToLayerPoint(B), offsetPx)
+    .map(p => map.layerPointToLatLng(L.point(p.x, p.y)));
 }
 
 // Build a map of unordered pairs -> which *cardinal directions* are present in view.
@@ -148,7 +143,7 @@ function createBeads(A, B, color, count, radius, tip){
       interactive: true
     });
     if (tip){
-      m.bindTooltip(tip, { sticky:true, opacity:0.95, direction:'auto', offset:[12,0], className:'flow-tip' });
+      m.bindTooltip(textElement('span', tip), { sticky:true, opacity:0.95, direction:'auto', offset:[12,0], className:'flow-tip' });
     }
     m.addTo(map);
     beads.push({ marker: m, a: A, b: B, t: t0 });
@@ -223,9 +218,9 @@ function drawFlows(rows){
       const minSep = Math.max(3, weightPx * 0.75);
       const maxSep = Math.max(minSep, weightPx * 2);
       const sep    = Math.min(maxSep, Math.max(minSep, weightPx * 1.2 * zoomFactor));
-      // Deterministic side by current cardinal: E/N = +, W/S = −
-      const sgn = (card === 'E' || card === 'N') ? 1 : -1;
-      [A2, B2] = segmentWithOffset(A0, B0, sgn * sep);
+      // The normal reverses with the route, so the same positive offset
+      // places opposite directions on opposite sides of the centerline.
+      [A2, B2] = segmentWithOffset(A0, B0, sep);
     }
     const pl = L.polyline([A2, B2], {
       weight: weightPx,
@@ -234,7 +229,7 @@ function drawFlows(rows){
       pane: flowsPane
     });
     const tip = `${r.origin} → ${r.dest} (${card})\nlegs: ${r.legs}, weight: ${r.weight_lbs.toFixed(1)} lbs`;
-    pl.bindTooltip(tip, { sticky:true, opacity:0.95, direction:'auto', offset:[12,0], className:'flow-tip' });
+    pl.bindTooltip(textElement('span', tip), { sticky:true, opacity:0.95, direction:'auto', offset:[12,0], className:'flow-tip' });
     pl.addTo(map);
     polylines.push(pl);
 
@@ -252,29 +247,60 @@ function drawFlows(rows){
   startBeadAnimation();
 }
 
-async function refresh(){
-  await ensureAirports();
+async function loadMapData(signal){
   const hours = document.getElementById('hours').value;
   const url = new URL('/api/flows', window.location.origin);
   url.searchParams.set('hours', hours);
-  // Ignore inbound/outbound entirely; always request all rows
-  url.searchParams.set('direction', 'all');
-  const r = await fetch(url.toString());
-  const rows = await r.json();
-  drawFlows(rows);
+  const [airportRows, stationRows, flowRows] = await Promise.all([
+    fetchRows('/api/airports', signal),
+    fetchRows('/api/stations', signal),
+    fetchRows(url.toString(), signal)
+  ]);
+  return {airportRows, stationRows, flowRows};
+}
 
-  // simple table
+function renderMapData({airportRows, stationRows, flowRows}){
+  airports = new Map(airportRows.map(a => [a.code.toUpperCase(), [a.lat, a.lon]]));
+  drawStations(stationRows);
+  drawFlows(flowRows);
+  renderFlowsTable(flowRows);
+}
+
+function refresh(){
+  return mapRefresh.request();
+}
+
+function renderFlowsTable(rows){
   const div = document.getElementById('flows-table');
-  div.innerHTML = '<table class="tbl"><thead><tr><th>Origin</th><th>Dest</th><th>Card</th><th>Legs</th><th>Weight (lbs)</th></tr></thead><tbody></tbody></table>';
-  const tb = div.querySelector('tbody');
+  const table = document.createElement('table');
+  table.className = 'tbl';
+  const head = document.createElement('thead');
+  const heading = document.createElement('tr');
+  for (const label of ['Origin', 'Dest', 'Card', 'Legs', 'Weight (lbs)']){
+    heading.appendChild(textElement('th', label));
+  }
+  head.appendChild(heading);
+  table.appendChild(head);
+  const tb = document.createElement('tbody');
   for (const x of aggregateByPair(rows)){
     const A = airports.get(x.origin?.toUpperCase());
     const B = airports.get(x.dest?.toUpperCase());
     const card = (A && B) ? primaryCardinal(L.latLng(A[0],A[1]), L.latLng(B[0],B[1])) : '—';
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${x.origin}</td><td>${x.dest}</td><td>${card}</td><td>${x.legs}</td><td>${x.weight_lbs.toFixed(1)}</td>`;
+    for (const value of [x.origin, x.dest, card, x.legs, x.weight_lbs.toFixed(1)]){
+      tr.appendChild(textElement('td', value));
+    }
     tb.appendChild(tr);
   }
+  if (!rows.length){
+    const row = document.createElement('tr');
+    const cell = textElement('td', 'No flows in the selected snapshot recency period.');
+    cell.colSpan = 5;
+    row.appendChild(cell);
+    tb.appendChild(row);
+  }
+  table.appendChild(tb);
+  div.replaceChildren(table);
 }
 
 function parseIsoUtc(iso){
@@ -302,11 +328,7 @@ function markerRadiusForZoom(z){
   return Math.max(12, Math.min(30, px));     // clamp for sanity
 }
 
-async function drawStations(){
-  const r = await fetch('/api/stations');
-  const rows = await r.json();
-  await ensureAirports();
-
+function drawStations(rows){
   if (stationsLayer){
     stationsLayer.remove();
     stationMarkers = [];
@@ -333,27 +355,40 @@ async function drawStations(){
       pane: stationsPane
     });
     const coords = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-    const status = (age<=90) ? 'online' : (age<=300 ? 'idle' : 'offline');
-    m.bindPopup(
-      `<strong>${st.name}</strong><br>` +
-      `status: <span style="color:${color}">${status}</span><br>` +
-      `last seen: ${st.last_seen_at || '—'}<br>` +
-      `default origin: ${st.last_default_origin || '—'}<br>` +
-      `coords: ${coords}<br>` +
-      `<a href="/stations/${encodeURIComponent(st.name)}">view details</a>`
-    );
+    const popup = document.createElement('div');
+    popup.appendChild(textElement('strong', st.name));
+    const status = textElement('div', '');
+    popup.appendChild(status);
+    for (const line of [`last seen: ${st.last_seen_at || '-'}`, `default origin: ${st.last_default_origin || '-'}`, `coords: ${coords}`]){
+      popup.appendChild(textElement('div', line));
+    }
+    const link = textElement('a', 'view details');
+    link.href = `/stations/${encodeURIComponent(st.name)}`;
+    popup.appendChild(link);
+    m.bindPopup(popup);
     m.on('click', () => m.openPopup());
     m.addTo(stationsLayer);
-    stationMarkers.push(m);
+    stationMarkers.push({marker:m, lastSeen:st.last_seen_at, status});
   }
   stationsLayer.addTo(map);
+  updateStationAges();
+}
+
+function updateStationAges(){
+  for (const {marker, lastSeen, status} of stationMarkers){
+    const age = ageSeconds(lastSeen);
+    const color = statusColorByAge(age);
+    marker.setStyle({fillColor:color});
+    status.textContent = `status: ${age <= 90 ? 'online' : (age <= 300 ? 'idle' : 'offline')}`;
+    status.style.color = color;
+  }
 }
 
 function updateMarkerSizes(){
   const z = map.getZoom();
   const r = markerRadiusForZoom(z);
-  for (const m of stationMarkers){
-    m.setRadius(r);
+  for (const {marker} of stationMarkers){
+    marker.setRadius(r);
   }
   // Redraw flows to keep offset measured in pixels correct for the new zoom.
   if (lastFlowRows.length) drawFlows(lastFlowRows);
@@ -397,7 +432,7 @@ function addLegendControl(){
   map._netopsLegend.addTo(map);
 }
 
-window.addEventListener('DOMContentLoaded', async () => {
+window.addEventListener('DOMContentLoaded', () => {
   map = L.map('map').setView([47.6062, -122.3321], 7);
   // Dedicated panes so station dots always render above flow lines.
   map.createPane(flowsPane);
@@ -410,20 +445,25 @@ window.addEventListener('DOMContentLoaded', async () => {
   }).addTo(map);
 
   addLegendControl();
+  mapRefresh = createRefreshController({load:loadMapData, render:renderMapData, status:$('refresh-status')});
   document.getElementById('refresh').addEventListener('click', refresh);
   // React to control changes without full page reload
-  ['axisFilter','colorMode','animateDots','ballsMax','weightAtMax','direction','hours'].forEach(id => {
+  ['axisFilter','colorMode','animateDots','ballsMax','weightAtMax'].forEach(id => {
     const el = $(id);
     if (el){
-      el.addEventListener('change', async () => {
+      el.addEventListener('change', () => {
         if (map._legendDiv) map._legendDiv.innerHTML = renderLegendHtml();
-        await refresh();
+        drawFlows(lastFlowRows);
       });
     }
   });
 
-  await drawStations();
-  await refresh();
+  $('hours').addEventListener('change', refresh);
+  refresh();
+  const ageTimer = setInterval(updateStationAges, 5000);
+  window.addEventListener('pagehide', event => {
+    if (!event.persisted){ clearInterval(ageTimer); clearBeads(); }
+  });
   map.on('zoomend', () => {
     updateMarkerSizes();
   });
