@@ -168,8 +168,15 @@ curl -fsS http://localhost:5250/api/ingest \
   clear it. A supplied list replaces that station's inventory atomically.
 - Manifests are upserts. Omitted fields preserve existing values; explicit `0`
   clears a boolean flag and an empty remarks string clears remarks.
+- Every manifest requires a stable `flight_code` or station-scoped `flight_id`
+  (alias `aoct_flight_id`). Missing identifiers reject the entire snapshot with
+  HTTP 422 before any writes. Feeders must keep the identifier across retries and
+  corrections, and assign a new identifier to each distinct flight. Tail, route,
+  and departure HHMM are not identity keys: those attributes can recur on another
+  flight. Existing unidentified records are retained without automatic matching
+  or deduplication; upgrade feeders before submitting further manifests.
 - `flight_id` and `aoct_flight_id` name the same feeder identifier; conflicting
-  values are rejected. `direction` remains required on flow rows.
+  values are rejected. Zero is a valid ID. `direction` remains required on flow rows.
 - Invalid request fields receive structured client errors (HTTP 422). Coordinates
   and numeric values must be finite and in their permitted ranges. Requests are
   limited to 8 MiB and each row list to 10,000 entries.

@@ -153,15 +153,8 @@ def ingest():
                 rec = s.execute(select(Flight).where(Flight.flight_code == mf.flight_code)).scalar_one_or_none()
             if not rec and aoct_id is not None:
                 rec = s.execute(select(Flight).where(Flight.station_id == station_id, Flight.aoct_flight_id == aoct_id)).scalar_one_or_none()
-            if not rec and (mf.tail and mf.origin and mf.dest and mf.takeoff_hhmm):
-                rec = s.execute(select(Flight).where(
-                    Flight.station_id == station_id,
-                    Flight.tail == mf.tail.strip().upper(),
-                    Flight.origin == mf.origin.strip().upper(),
-                    Flight.dest == mf.dest.strip().upper(),
-                    Flight.takeoff_hhmm == mf.takeoff_hhmm.zfill(4),
-                    Flight.complete == 0
-                ).order_by(Flight.last_seen_at.desc(), Flight.id.desc())).scalars().first()
+            # Route/time attributes repeat and cannot identify a flight. Schema
+            # validation requires a stable identifier, regardless of completion.
 
             updated_at = mf.updated_at or gen_at
             if updated_at > _now_utc() + timedelta(minutes=5):

@@ -196,3 +196,46 @@ def test_concurrent_uploads_keep_latest_state_and_retry_identity(backend, same_g
         assert session.scalar(select(func.max(Snapshot.generated_at))) == newest
         if same_generation:
             assert session.scalar(select(func.count()).select_from(Snapshot)) == 1
+
+
+@pytest.mark.parametrize("complete", [0, 1])
+def test_unidentified_manifest_retry_rejects_entire_snapshot(backend, complete):
+    original = snapshot(backend, inventory=[{"item": "Keep"}],
+                        manifests=[{"flight_code": "KEEP", "remarks": "unchanged"}])
+    assert post(backend, original).status_code == 200
+    payload = snapshot(backend, generated_at=(backend["time"] + timedelta(minutes=1)).isoformat(),
+                       default_origin="KNEW", flows=[], inventory=[],
+                       manifests=[{"flight_code": "NEW"},
+                                  {"tail": "N123", "origin": "KSYN", "dest": "KDEM",
+                                   "takeoff_hhmm": "1200", "complete": complete}])
+    for _ in range(2):
+        response = post(backend, payload)
+        assert response.status_code == 422
+        assert "Manifest requires flight_code" in response.get_data(as_text=True)
+    assert inventory(backend)[0]["item"] == "Keep"
+    with backend["sessions"]() as session:
+        flights = session.scalars(select(Flight)).all()
+        assert len(flights) == 1
+        assert (flights[0].flight_code, flights[0].remarks) == ("KEEP", "unchanged")
+        assert session.scalar(select(func.count()).select_from(Snapshot)) == 1
+        assert session.get(Station, backend["station_id"]).last_default_origin is None
+    assert len(backend["client"].get("/api/flows").get_json()) == 1
+
+
+@pytest.mark.parametrize("identity", ["flight_code", "flight_id", "aoct_flight_id"])
+def test_identified_completed_retry_and_repeated_route_are_distinct(backend, identity):
+    attrs = {"tail": "N123", "origin": "KSYN", "dest": "KDEM", "takeoff_hhmm": "1200"}
+    first_id, second_id = ("FIRST", "SECOND") if identity == "flight_code" else (0, 1)
+    for index, value in enumerate((first_id, second_id)):
+        # Distinct flights with identical route attributes must never collapse,
+        # even while incomplete. Completion and correction retain the same ID.
+        for complete in (0, 1, 0, 1):
+            payload = snapshot(backend,
+                               generated_at=(backend["time"] + timedelta(minutes=index)).isoformat(),
+                               manifests=[dict(attrs, **{identity: value, "complete": complete})])
+            assert post(backend, payload).status_code == 200
+            assert post(backend, payload).status_code == 200
+            with backend["sessions"]() as session:
+                rows = session.scalars(select(Flight).order_by(Flight.id)).all()
+                assert len(rows) == index + 1
+                assert rows[-1].complete == complete

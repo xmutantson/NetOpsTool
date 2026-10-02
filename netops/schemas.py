@@ -76,6 +76,12 @@ class ManifestRow(DataModel):
             values["flight_id"] = alias
         return values
 
+    @root_validator(skip_on_failure=True)
+    def _required_identity(cls, values):
+        if values.get("flight_code") is None and values.get("flight_id") is None:
+            raise ValueError("Manifest requires flight_code, flight_id, or aoct_flight_id")
+        return values
+
     @validator("tail", "origin", "dest")
     def _codes(cls, value):
         return value.upper() if value else value
