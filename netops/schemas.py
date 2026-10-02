@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import fsum
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, constr, root_validator, validator
@@ -107,6 +108,8 @@ class InventoryItem(DataModel):
     category: Optional[constr(strip_whitespace=True, max_length=128)] = None
     category_id: Optional[int] = Field(None, ge=0)
     item: constr(strip_whitespace=True, min_length=1, max_length=128)
+    # Input package size distinguishes variants; storage/API expose item totals.
+    unit_weight_lbs: Optional[float] = Field(None, ge=0)
     qty: Optional[float] = Field(None, ge=0)
     weight_lbs: Optional[float] = Field(None, ge=0)
     updated_at: Optional[datetime] = None
@@ -139,9 +142,39 @@ class IngestSnapshot(DataModel):
         return value.upper() if value else value
 
     @validator("inventory")
-    def _unique_inventory(cls, values):
-        if values is not None:
-            identities = [(item.category, item.item) for item in values]
-            if len(set(identities)) != len(identities):
-                raise ValueError("Inventory contains duplicate category/item pairs")
-        return values
+    def _inventory_totals(cls, values):
+        if values is None:
+            return None
+        groups = {}
+        for row in values:
+            groups.setdefault((row.category, row.item), []).append(row)
+        totals = []
+        for (category, item), rows in groups.items():
+            sizes = [row.unit_weight_lbs for row in rows]
+            if len(set(sizes)) != len(sizes):
+                raise ValueError("Inventory contains duplicate category/item/package-size rows")
+            if len(rows) > 1 and None in sizes:
+                raise ValueError("Inventory cannot mix unspecified and explicit package sizes for one item")
+            category_ids = {row.category_id for row in rows if row.category_id is not None}
+            if len(category_ids) > 1:
+                raise ValueError("Inventory category/item rows have conflicting category IDs")
+            timestamps = [row.updated_at for row in rows if row.updated_at is not None]
+
+            def total(field):
+                amounts = [getattr(row, field) for row in rows]
+                if any(amount is None for amount in amounts):
+                    return None  # unknown amounts must not become misleading partial totals
+                try:
+                    return fsum(amounts)
+                except OverflowError as exc:
+                    raise ValueError("Inventory totals must be finite") from exc
+
+            # qty counts stock units/packages across sizes. weight_lbs is already
+            # a row total (possibly rounded by the feeder); never multiply it by qty.
+            totals.append(InventoryItem(
+                category=category, category_id=next(iter(category_ids), None), item=item,
+                unit_weight_lbs=sizes[0] if len(rows) == 1 else None,
+                qty=total("qty"), weight_lbs=total("weight_lbs"),
+                updated_at=max(timestamps) if timestamps else None,
+            ))
+        return totals

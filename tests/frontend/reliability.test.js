@@ -364,3 +364,38 @@ test('recency UI explains latest snapshots and has no ignored direction selector
   assert.match(html, /weights are not totals over time/);
   assert.doesNotMatch(html, /id="direction"/);
 });
+
+
+test('inventory displays stock-unit counts separately from aggregate pounds', () => {
+  const h = harness();
+  vm.runInContext(script('templates/station_detail.html')
+    .replace('{{ name|tojson }}', JSON.stringify('SYNTHETIC')).split('const inventoryRefresh =')[0], h.context);
+  h.context.renderInventory([{category:'Food',item:'Rice',qty:6,weight_lbs:9}]);
+  const group = h.document.getElementById('cat-list').children[0];
+  const table = group.children[1];
+  assert.equal(table.children[0].children[0].children[1].textContent, 'Quantity (units)');
+  assert.equal(table.children[1].children[0].children[1].textContent, '6');
+  assert.equal(table.children[1].children[0].children[2].textContent, '9');
+  assert.equal(h.document.getElementById('grand-wt').textContent, '9.0');
+  assert.match(group.children[0].textContent, /9.0 lbs/);
+  assert.match(read('templates/station_detail.html'), /stock units\/packages across sizes/);
+});
+
+test('unknown inventory weights never display a partial category or grand total', () => {
+  const h = harness();
+  vm.runInContext(script('templates/station_detail.html')
+    .replace('{{ name|tojson }}', JSON.stringify('SYNTHETIC')).split('const inventoryRefresh =')[0], h.context);
+  h.context.renderInventory([
+    {category:'Food',item:'Rice',qty:null,weight_lbs:null},
+    {category:'Food',item:'Beans',qty:2,weight_lbs:5},
+    {category:'Supplies',item:'Bandages',qty:0,weight_lbs:0}
+  ]);
+  const groups = h.document.getElementById('cat-list').children;
+  assert.match(groups[0].children[0].textContent, /total weight unknown/);
+  assert.match(groups[1].children[0].textContent, /0.0 lbs/);
+  assert.equal(h.document.getElementById('grand-wt').textContent, '-');
+  const rice = groups[0].children[1].children[1].children[1];
+  assert.equal(rice.children[0].textContent, 'Rice');
+  assert.equal(rice.children[1].textContent, '-');
+  assert.equal(rice.children[2].textContent, '-');
+});

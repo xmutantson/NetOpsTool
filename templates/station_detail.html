@@ -7,6 +7,7 @@
   <strong>Total weight (last snapshot):</strong>
   <span id="grand-wt">-</span> lbs
 </div>
+<p>Quantities count stock units/packages across sizes; weights are total pounds. A dash means an unknown quantity or weight.</p>
 <div id="cat-list" class="stack" style="display:grid; gap:12px;"></div>
 <script>
 const stationName = {{ name|tojson }};
@@ -16,30 +17,33 @@ function renderInventory(rows){
     .filter(el => el.tagName === 'DETAILS' && !el.open).map(el => el.dataset.category));
   const groups = new Map();
   let grandWt = 0;
+  let unknownWeight = false;
   for (const it of rows){
     const cat = (it.category && it.category.trim()) ? it.category.trim() : 'Uncategorized';
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat).push(it);
     if (typeof it.weight_lbs === 'number') grandWt += it.weight_lbs;
+    else unknownWeight = true;
   }
   const content = document.createDocumentFragment();
   const sortedCats = Array.from(groups.keys()).sort((a,b) => a.localeCompare(b));
   for (const cat of sortedCats){
     const items = groups.get(cat);
-    const subtotal = items.reduce((sum, it) => sum + (typeof it.weight_lbs === 'number' ? it.weight_lbs : 0), 0);
+    const subtotal = items.every(it => typeof it.weight_lbs === 'number')
+      ? items.reduce((sum, it) => sum + it.weight_lbs, 0) : null;
     const wrap = document.createElement('details');
     wrap.className = 'cat-block card';
     wrap.dataset.category = cat;
     wrap.open = !collapsed.has(cat);
     const summary = document.createElement('summary');
     summary.appendChild(textElement('strong', cat));
-    summary.appendChild(textElement('span', ` — ${subtotal.toFixed(1)} lbs`));
+    summary.appendChild(textElement('span', subtotal === null ? ' - total weight unknown' : ' - ' + subtotal.toFixed(1) + ' lbs'));
     wrap.appendChild(summary);
     const table = document.createElement('table');
     table.className = 'tbl';
     const head = document.createElement('thead');
     const heading = document.createElement('tr');
-    for (const label of ['Item', 'Quantity', 'Total Weight (lbs)', 'Updated']){
+    for (const label of ['Item', 'Quantity (units)', 'Total Weight (lbs)', 'Updated']){
       heading.appendChild(textElement('th', label));
     }
     head.appendChild(heading);
@@ -59,7 +63,7 @@ function renderInventory(rows){
   }
   if (!rows.length) content.appendChild(textElement('p', 'No inventory in the latest snapshot.'));
   container.replaceChildren(content);
-  document.getElementById('grand-wt').textContent = grandWt.toFixed(1);
+  document.getElementById('grand-wt').textContent = unknownWeight ? '-' : grandWt.toFixed(1);
 }
 const inventoryRefresh = createRefreshController({
   load: signal => fetchRows(`/api/stations/${encodeURIComponent(stationName)}/inventory`, signal),

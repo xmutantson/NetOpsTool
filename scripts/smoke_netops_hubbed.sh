@@ -220,10 +220,12 @@ for S in "${STATIONS[@]}"; do
     manifests_json='[]'
     note="(kalw-real=1; flows=$( ((KALW_FLOWS)) && echo on || echo off ))"
   else
-    # Small fake manifest set (2 items) for non-KALW
+    # Two persistent synthetic flight slots per station. Re-running refreshes
+    # these same demo flights (not a history of daily departures). IDs are scoped
+    # to each station; reserve 900000001/2 for this disposable demo dataset.
     manifests_json="$(jq -n --arg tail "${S}-T1" --arg o "$S" --arg d "${dests[0]:-KBFI}" \
-      '[ {tail:$tail, direction:"outbound", origin:$o, dest:$d, cargo_type:"Food", cargo_weight_lbs: 200.5, takeoff_hhmm:"0900", eta_hhmm:"1030", is_ramp_entry:1, complete:0, remarks:"smoke"} ,
-         {tail:$tail, direction:"outbound", origin:$o, dest:$d, cargo_type:"Medical", cargo_weight_lbs: 120.0, takeoff_hhmm:"1300", eta_hhmm:"1415", is_ramp_entry:1, complete:0, remarks:"smoke"} ]')"
+      '[ {tail:$tail, direction:"outbound", origin:$o, dest:$d, flight_id:900000001, cargo_type:"Food", cargo_weight_lbs: 200.5, takeoff_hhmm:"0900", eta_hhmm:"1030", is_ramp_entry:1, complete:0, remarks:"smoke"} ,
+         {tail:$tail, direction:"outbound", origin:$o, dest:$d, flight_id:900000002, cargo_type:"Medical", cargo_weight_lbs: 120.0, takeoff_hhmm:"1300", eta_hhmm:"1415", is_ramp_entry:1, complete:0, remarks:"smoke"} ]')"
     note=""
   fi
 

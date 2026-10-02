@@ -166,6 +166,24 @@ curl -fsS http://localhost:5250/api/ingest \
 - `flows` is a complete set for that snapshot; omitting it means no flows.
 - Omit `inventory` (or send `null`) to leave existing cargo untouched. Send `"inventory": []` to
   clear it. A supplied list replaces that station's inventory atomically.
+- Inventory input rows identify `(category, item, unit_weight_lbs)`; the optional
+  `unit_weight_lbs` is pounds per stock unit/package, not the row's total weight.
+  For example, AirOps sends separate rows for 1 lb and 2 lb packages of Rice.
+  NetOps stores and returns one total per `(category, item)`: `qty` is the sum of
+  stock-unit/package counts across sizes, and `weight_lbs` is the sum of the
+  feeder's row-total pounds. Three 1 lb packages plus three 2 lb packages become
+  **6 stock units, 9 lbs**. Reported weights may already be rounded; NetOps does
+  not multiply them by quantity again or recompute them from package size.
+- Package-size breakdown is not retained; this is a stock summary, not a pick
+  list. Missing quantity or weight in any variant makes that aggregate field
+  unknown (`null`), rather than a partial sum or inferred zero. Zero is known.
+  `updated_at` is the latest supplied variant timestamp (ingest time if none).
+  The inventory page labels quantities as units and shows unknown totals as a dash.
+- Duplicate rows for the same category/item/package size reject the whole snapshot
+  with HTTP 422. A legacy row without package size is accepted alone for an item;
+  it cannot be mixed with explicit-size rows, which could double-count a summary.
+  Conflicting non-null category IDs within the same category/item also reject the
+  snapshot. Category names and item names are whitespace-trimmed before grouping.
 - Manifests are upserts. Omitted fields preserve existing values; explicit `0`
   clears a boolean flag and an empty remarks string clears remarks.
 - Every manifest requires a stable `flight_code` or station-scoped `flight_id`
@@ -249,6 +267,12 @@ Health:
 ---
 
 ## Smoke data (optional)
+
+The hubbed generator uses two persistent synthetic flight slots per station,
+with station-scoped `flight_id` values **900000001** and **900000002**. Re-running
+updates those same fixtures, including across dates; it does not create flight
+history. Reserve these IDs for this disposable demo dataset and do not mix it
+with real feeder data. Both generated manifests satisfy the required-ID contract.
 
 These are data generators, not regression tests. Run them only against disposable
 data: they write coordinates, snapshots, manifests and optionally inventory. They
